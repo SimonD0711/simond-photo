@@ -1,4 +1,11 @@
 backups/
+admin-stats.html
+api_server.py
+cheungchau-api.service
+cheungchau-plain.html
+nginx-default.conf
+robots.txt
+sitemap.xml
 remote-default.conf
 remote-gemini-proxy.conf
 remote-google-proxy.conf
