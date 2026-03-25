@@ -1,0 +1,796 @@
+﻿<!DOCTYPE html>
+<html lang="zh-HK">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>SimonDPhotograph | 長洲之旅</title>
+  <style>
+    :root {
+      --text: #163447;
+      --muted: #5b7a8c;
+      --line: rgba(160, 201, 221, 0.42);
+      --glass: rgba(255, 255, 255, 0.68);
+      --shadow: 0 24px 60px rgba(76, 132, 156, 0.14);
+      --accent: #1f6fb2;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      font-family: "Outfit", "Segoe UI", Arial, sans-serif;
+      background:
+        radial-gradient(circle at top left, rgba(92, 214, 221, 0.22), transparent 24%),
+        radial-gradient(circle at 82% 12%, rgba(124, 180, 255, 0.20), transparent 24%),
+        linear-gradient(180deg, #f5fdff 0%, #e7f4fb 100%);
+      color: var(--text);
+    }
+
+    a {
+      color: var(--accent);
+      text-decoration: none;
+    }
+
+    .wrap {
+      max-width: 1560px;
+      margin: 0 auto;
+      padding: 24px;
+    }
+
+    .topbar {
+      margin-bottom: 24px;
+      padding: 20px 24px;
+      background: var(--glass);
+      border: 1px solid var(--line);
+      border-radius: 24px;
+      box-shadow: var(--shadow);
+      backdrop-filter: blur(18px);
+    }
+
+    .topbar a {
+      margin-right: 16px;
+    }
+
+    h1 {
+      margin: 0 0 8px;
+      font-size: 42px;
+    }
+
+    .desc {
+      margin: 0;
+      color: var(--muted);
+      line-height: 1.7;
+    }
+
+    .layout {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 290px;
+      gap: 22px;
+      align-items: start;
+    }
+
+    .gallery {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 22px;
+      align-items: start;
+      justify-content: center;
+    }
+
+    .card {
+      display: block;
+      flex: 0 0 auto;
+      width: clamp(220px, calc(var(--card-ratio, 1) * 300px), 520px);
+      background: var(--glass);
+      border: 1px solid var(--line);
+      border-radius: 24px;
+      overflow: hidden;
+      box-shadow: 0 20px 46px rgba(76, 132, 156, 0.12);
+      backdrop-filter: blur(18px);
+    }
+
+    .thumb {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      overflow: hidden;
+      background: linear-gradient(180deg, #e7f4fb 0%, #d9eef8 100%);
+      height: 320px;
+    }
+
+    .thumb img {
+      display: block;
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      object-position: center;
+      transform: scale(1.14);
+      transition: transform 320ms ease, filter 320ms ease, opacity 220ms ease;
+    }
+
+    .thumb:hover img {
+      transform: scale(1.18);
+      filter: saturate(1.04) contrast(1.02);
+    }
+
+    .copy {
+      padding: 16px 18px 18px;
+    }
+
+    .title {
+      margin: 0 0 8px;
+      font-size: 22px;
+    }
+
+    .meta {
+      margin: 0 0 12px;
+      color: var(--muted);
+      line-height: 1.7;
+      font-size: 14px;
+    }
+
+    .links a {
+      margin-right: 14px;
+      font-size: 14px;
+    }
+
+    .engagement {
+      margin-top: 14px;
+      padding-top: 14px;
+      border-top: 1px solid rgba(160, 201, 221, 0.28);
+    }
+
+    .engagement-bar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+    }
+
+    .engagement-actions {
+      display: flex;
+      align-items: center;
+      gap: 18px;
+      flex-wrap: wrap;
+    }
+
+    .action-button {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      min-height: 36px;
+      padding: 0;
+      border: 0;
+      background: transparent;
+      color: var(--text);
+      font: inherit;
+      cursor: pointer;
+      transition: transform 180ms ease, opacity 180ms ease, color 180ms ease;
+    }
+
+    .action-button:hover {
+      transform: translateY(-1px);
+      opacity: 0.82;
+    }
+
+    .action-icon {
+      font-size: 27px;
+      line-height: 1;
+    }
+
+    .like-button.is-liked {
+      color: var(--accent);
+    }
+
+    .comment-panel {
+      display: grid;
+      grid-template-rows: 0fr;
+      margin-top: 0;
+      opacity: 0;
+      transition: grid-template-rows 240ms ease, opacity 240ms ease, margin-top 240ms ease;
+    }
+
+    .comment-panel.is-open {
+      grid-template-rows: 1fr;
+      margin-top: 12px;
+      opacity: 1;
+    }
+
+    .comment-panel-inner {
+      min-height: 0;
+      overflow: hidden;
+    }
+
+    .comment-list {
+      display: grid;
+      gap: 10px;
+      margin: 0 0 12px;
+    }
+
+    .comment-item {
+      padding: 10px 12px;
+      border-radius: 16px;
+      background: rgba(255, 255, 255, 0.45);
+      border: 1px solid rgba(160, 201, 221, 0.26);
+    }
+
+    .comment-head {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      margin-bottom: 4px;
+      font-size: 12px;
+      color: var(--muted);
+    }
+
+    .comment-author {
+      color: var(--text);
+      font-weight: 700;
+    }
+
+    .comment-body {
+      margin: 0;
+      color: var(--text);
+      font-size: 14px;
+      line-height: 1.6;
+      white-space: pre-wrap;
+    }
+
+    .comment-form {
+      display: grid;
+      gap: 10px;
+    }
+
+    .comment-form input,
+    .comment-form textarea {
+      width: 100%;
+      padding: 10px 12px;
+      border: 1px solid rgba(160, 201, 221, 0.42);
+      border-radius: 14px;
+      background: rgba(255, 255, 255, 0.78);
+      font: inherit;
+      color: var(--text);
+    }
+
+    .comment-form textarea {
+      min-height: 90px;
+      resize: vertical;
+    }
+
+    .comment-form button {
+      width: fit-content;
+      min-height: 38px;
+      padding: 0 14px;
+      border: 0;
+      border-radius: 999px;
+      background: linear-gradient(135deg, #5cd6dd 0%, #4a8df4 100%);
+      color: #fff;
+      font: inherit;
+      cursor: pointer;
+    }
+
+    .sidebar {
+      position: sticky;
+      top: 24px;
+      padding: 20px 20px 22px;
+      background: var(--glass);
+      border: 1px solid var(--line);
+      border-radius: 24px;
+      box-shadow: var(--shadow);
+      backdrop-filter: blur(18px);
+    }
+
+    .sidebar h2 {
+      margin: 0 0 8px;
+      font-size: 26px;
+    }
+
+    .sidebar p {
+      margin: 0 0 16px;
+      color: var(--muted);
+      line-height: 1.7;
+      font-size: 14px;
+    }
+
+    .timeline {
+      position: relative;
+      margin: 0;
+      padding: 0 0 0 18px;
+      list-style: none;
+    }
+
+    .timeline::before {
+      content: "";
+      position: absolute;
+      top: 0;
+      bottom: 0;
+      left: 4px;
+      width: 2px;
+      background: linear-gradient(180deg, rgba(43, 152, 179, 0.55) 0%, rgba(43, 152, 179, 0.12) 100%);
+    }
+
+    .timeline li {
+      position: relative;
+      padding: 0 0 18px 18px;
+    }
+
+    .timeline li::before {
+      content: "";
+      position: absolute;
+      top: 4px;
+      left: -1px;
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      background: linear-gradient(135deg, #5cd6dd 0%, #4a8df4 100%);
+      box-shadow: 0 0 0 5px rgba(92, 214, 221, 0.18);
+    }
+
+    .time {
+      display: block;
+      margin-bottom: 4px;
+      color: var(--accent);
+      font-size: 13px;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+    }
+
+    .timeline strong {
+      display: block;
+      margin-bottom: 4px;
+      font-size: 16px;
+    }
+
+    .timeline span {
+      display: block;
+      color: var(--muted);
+      line-height: 1.6;
+      font-size: 14px;
+    }
+
+    .lightbox {
+      position: fixed;
+      inset: 0;
+      display: none;
+      align-items: center;
+      justify-content: center;
+      padding: 28px;
+      background: rgba(10, 28, 40, 0.72);
+      backdrop-filter: blur(14px);
+      z-index: 20;
+    }
+
+    .lightbox.is-open {
+      display: flex;
+      animation: fadeIn 220ms ease;
+    }
+
+    .lightbox-backdrop {
+      position: absolute;
+      inset: 0;
+    }
+
+    .lightbox-figure {
+      position: relative;
+      margin: 0;
+      max-width: min(92vw, 1300px);
+      max-height: 88vh;
+      transform: scale(0.96);
+      opacity: 0;
+      animation: popIn 260ms ease forwards;
+    }
+
+    .lightbox img {
+      display: block;
+      max-width: 100%;
+      max-height: 80vh;
+      border-radius: 22px;
+      box-shadow: 0 26px 60px rgba(0, 0, 0, 0.24);
+    }
+
+    .lightbox figcaption {
+      margin-top: 10px;
+      color: #eff8ff;
+      font-size: 14px;
+      line-height: 1.6;
+    }
+
+    .lightbox-meta {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 14px;
+      margin-top: 12px;
+    }
+
+    .lightbox-download {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 40px;
+      padding: 0 16px;
+      border-radius: 999px;
+      border: 1px solid rgba(255, 255, 255, 0.28);
+      background: rgba(255, 255, 255, 0.14);
+      color: #eff8ff;
+      text-decoration: none;
+      font-size: 14px;
+      white-space: nowrap;
+      transition: transform 180ms ease, background-color 180ms ease, border-color 180ms ease;
+    }
+
+    .lightbox-download:hover {
+      transform: translateY(-1px);
+      background: rgba(255, 255, 255, 0.2);
+      border-color: rgba(255, 255, 255, 0.4);
+    }
+
+    .lightbox-close {
+      position: absolute;
+      top: 12px;
+      right: 12px;
+      width: 40px;
+      height: 40px;
+      border: 0;
+      border-radius: 50%;
+      background: rgba(255, 255, 255, 0.82);
+      color: var(--text);
+      font-size: 18px;
+      cursor: pointer;
+    }
+
+    @keyframes fadeIn {
+      from { opacity: 0; }
+      to { opacity: 1; }
+    }
+
+    @keyframes popIn {
+      from {
+        transform: scale(0.96) translateY(12px);
+        opacity: 0;
+      }
+      to {
+        transform: scale(1) translateY(0);
+        opacity: 1;
+      }
+    }
+
+    @media (max-width: 1320px) {
+      .wrap {
+        max-width: 1280px;
+      }
+
+      .gallery {
+        gap: 18px;
+      }
+
+      .card {
+        width: clamp(220px, calc(var(--card-ratio, 1) * 260px), 430px);
+      }
+
+      .thumb {
+        height: 280px;
+      }
+    }
+
+    @media (max-width: 980px) {
+      .layout {
+        grid-template-columns: 1fr;
+      }
+
+      .sidebar {
+        position: static;
+      }
+    }
+
+    @media (max-width: 800px) {
+      .gallery {
+        display: grid;
+        grid-template-columns: 1fr;
+      }
+
+      .card {
+        width: 100%;
+      }
+
+      .thumb {
+        height: auto;
+      }
+
+      .thumb img {
+        width: 100%;
+        height: auto;
+        object-fit: contain;
+        transform: none;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="topbar">
+      <h1>長洲之旅</h1>
+      <p class="desc">SimonDPhotograph 的長洲攝影集正式首頁。點縮略圖可直接絲滑放大查看原圖，也可以下載原圖收藏。</p>
+      <p class="links">
+        <a href="/index.html">返回首頁</a>
+        <a href="/cheungchau-plain.html">備份頁</a>
+      </p>
+    </div>
+
+    <div class="layout">
+      <div class="gallery">
+        <div class="card"><a class="thumb" href="/cheungchaw/DSC_0249.JPG" data-lightbox="01 / 碼頭初光 · 2026-03-14 14:32 · NIKON Z f"><img src="/thumbs/DSC_0249.JPG" alt="DSC_0249"></a><div class="copy"><h2 class="title">01 / 碼頭初光</h2><p class="meta">2026-03-14 14:32 · NIKON Z f · f/9 · 1/250 s · ISO 160 · 65 mm</p><p class="links"><a href="/cheungchaw/DSC_0249.JPG" target="_blank">查看原圖</a><a href="https://www.google.com/maps/search/?api=1&query=22.208665,114.029775" target="_blank">地圖</a></p></div></div>
+        <div class="card"><a class="thumb" href="/cheungchaw/DSC_0254.JPG" data-lightbox="02 / 渡口微風 · 2026-03-14 14:34 · NIKON Z f"><img src="/thumbs/DSC_0254.JPG" alt="DSC_0254"></a><div class="copy"><h2 class="title">02 / 渡口微風</h2><p class="meta">2026-03-14 14:34 · NIKON Z f · f/4 · 1/250 s · ISO 220 · 49 mm</p><p class="links"><a href="/cheungchaw/DSC_0254.JPG" target="_blank">查看原圖</a><a href="https://www.google.com/maps/search/?api=1&query=22.208665,114.029775" target="_blank">地圖</a></p></div></div>
+        <div class="card"><a class="thumb" href="/cheungchaw/IMG_20260314_145322.jpg" data-lightbox="03 / 午後一瞬 · 2026-03-14 14:53 · SM-S9380"><img src="/thumbs/IMG_20260314_145322.jpg" alt="IMG_20260314_145322"></a><div class="copy"><h2 class="title">03 / 午後一瞬</h2><p class="meta">2026-03-14 14:53 · SM-S9380 · f/1.7 · 1/3333 s · ISO 47 · 6 mm</p><p class="links"><a href="/cheungchaw/IMG_20260314_145322.jpg" target="_blank">查看原圖</a><a href="https://www.google.com/maps/search/?api=1&query=22.209067,114.031019" target="_blank">地圖</a></p></div></div>
+        <div class="card"><a class="thumb" href="/cheungchaw/DSC_0260.JPG" data-lightbox="04 / 船影之間 · 2026-03-14 14:41 · NIKON Z f"><img src="/thumbs/DSC_0260.JPG" alt="DSC_0260"></a><div class="copy"><h2 class="title">04 / 船影之間</h2><p class="meta">2026-03-14 14:41 · NIKON Z f · f/8 · 1/250 s · ISO 140 · 61 mm</p><p class="links"><a href="/cheungchaw/DSC_0260.JPG" target="_blank">查看原圖</a><a href="https://www.google.com/maps/search/?api=1&query=22.209058,114.030923" target="_blank">地圖</a></p></div></div>
+        <div class="card"><a class="thumb" href="/cheungchaw/DSC_0274.JPG" data-lightbox="05 / 街口留白 · 2026-03-14 15:21 · NIKON Z f"><img src="/thumbs/DSC_0274.JPG" alt="DSC_0274"></a><div class="copy"><h2 class="title">05 / 街口留白</h2><p class="meta">2026-03-14 15:21 · NIKON Z f · f/9 · 1/250 s · ISO 100 · 85 mm</p><p class="links"><a href="/cheungchaw/DSC_0274.JPG" target="_blank">查看原圖</a><a href="https://www.google.com/maps/search/?api=1&query=22.208642,114.030965" target="_blank">地圖</a></p></div></div>
+        <div class="card"><a class="thumb" href="/cheungchaw/DSC_0322.JPG" data-lightbox="06 / 港邊慢潮 · 2026-03-14 15:49 · NIKON Z f"><img src="/thumbs/DSC_0322.JPG" alt="DSC_0322"></a><div class="copy"><h2 class="title">06 / 港邊慢潮</h2><p class="meta">2026-03-14 15:49 · NIKON Z f · f/9 · 1/60 s · ISO 320 · 85 mm</p><p class="links"><a href="/cheungchaw/DSC_0322.JPG" target="_blank">查看原圖</a><a href="https://www.google.com/maps/search/?api=1&query=22.206273,114.034658" target="_blank">地圖</a></p></div></div>
+        <div class="card"><a class="thumb" href="/cheungchaw/DSC_0324.JPG" data-lightbox="07 / 船塢回聲 · 2026-03-14 15:51 · NIKON Z f"><img src="/thumbs/DSC_0324.JPG" alt="DSC_0324"></a><div class="copy"><h2 class="title">07 / 船塢回聲</h2><p class="meta">2026-03-14 15:51 · NIKON Z f · f/9 · 1/125 s · ISO 220 · 85 mm</p><p class="links"><a href="/cheungchaw/DSC_0324.JPG" target="_blank">查看原圖</a><a href="https://www.google.com/maps/search/?api=1&query=22.206273,114.034658" target="_blank">地圖</a></p></div></div>
+        <div class="card"><a class="thumb" href="/cheungchaw/DSC_0335.jpg" data-lightbox="08 / 海風告示 · 2026-03-14 15:56 · NIKON Z f"><img src="/thumbs/DSC_0335.jpg" alt="DSC_0335"></a><div class="copy"><h2 class="title">08 / 海風告示</h2><p class="meta">2026-03-14 15:56 · NIKON Z f · f/9 · 1/125 s · ISO 100 · 85 mm</p><p class="links"><a href="/cheungchaw/DSC_0335.jpg" target="_blank">查看原圖</a></p></div></div>
+        <div class="card"><a class="thumb" href="/cheungchaw/DSC_0340.JPG" data-lightbox="09 / 斜陽小港 · 2026-03-14 16:11 · NIKON Z f"><img src="/thumbs/DSC_0340.JPG" alt="DSC_0340"></a><div class="copy"><h2 class="title">09 / 斜陽小港</h2><p class="meta">2026-03-14 16:11 · NIKON Z f · f/9 · 1/125 s · ISO 100 · 85 mm</p><p class="links"><a href="/cheungchaw/DSC_0340.JPG" target="_blank">查看原圖</a><a href="https://www.google.com/maps/search/?api=1&query=22.207852,114.037952" target="_blank">地圖</a></p></div></div>
+        <div class="card"><a class="thumb" href="/cheungchaw/DSC_0342.JPG" data-lightbox="10 / 舊船與光 · 2026-03-14 16:12 · NIKON Z f"><img src="/thumbs/DSC_0342.JPG" alt="DSC_0342"></a><div class="copy"><h2 class="title">10 / 舊船與光</h2><p class="meta">2026-03-14 16:12 · NIKON Z f · f/9 · 1/125 s · ISO 100 · 85 mm</p><p class="links"><a href="/cheungchaw/DSC_0342.JPG" target="_blank">查看原圖</a><a href="https://www.google.com/maps/search/?api=1&query=22.208348,114.037233" target="_blank">地圖</a></p></div></div>
+        <div class="card"><a class="thumb" href="/cheungchaw/DSC_0343.jpg" data-lightbox="11 / 暗湧之前 · 2026-03-14 16:36 · NIKON Z f"><img src="/thumbs/DSC_0343.jpg" alt="DSC_0343"></a><div class="copy"><h2 class="title">11 / 暗湧之前</h2><p class="meta">2026-03-14 16:36 · NIKON Z f · f/11 · 1/125 s · ISO 1800 · 85 mm</p><p class="links"><a href="/cheungchaw/DSC_0343.jpg" target="_blank">查看原圖</a></p></div></div>
+        <div class="card"><a class="thumb" href="/cheungchaw/DSC_0347.JPG" data-lightbox="12 / 堤岸餘溫 · 2026-03-14 16:45 · NIKON Z f"><img src="/thumbs/DSC_0347.JPG" alt="DSC_0347"></a><div class="copy"><h2 class="title">12 / 堤岸餘溫</h2><p class="meta">2026-03-14 16:45 · NIKON Z f · f/11 · 1/125 s · ISO 100 · 85 mm</p><p class="links"><a href="/cheungchaw/DSC_0347.JPG" target="_blank">查看原圖</a><a href="https://www.google.com/maps/search/?api=1&query=22.20763,114.033495" target="_blank">地圖</a></p></div></div>
+        <div class="card"><a class="thumb" href="/cheungchaw/DSC_0352.JPG" data-lightbox="13 / 黃昏停泊 · 2026-03-14 16:56 · NIKON Z f"><img src="/thumbs/DSC_0352.JPG" alt="DSC_0352"></a><div class="copy"><h2 class="title">13 / 黃昏停泊</h2><p class="meta">2026-03-14 16:56 · NIKON Z f · f/11 · 1/125 s · ISO 100 · 85 mm</p><p class="links"><a href="/cheungchaw/DSC_0352.JPG" target="_blank">查看原圖</a><a href="https://www.google.com/maps/search/?api=1&query=22.20763,114.033495" target="_blank">地圖</a></p></div></div>
+        <div class="card"><a class="thumb" href="/cheungchaw/DSC_0379.jpg" data-lightbox="14 / 巷尾靜藍 · 2026-03-14 17:18 · NIKON Z f"><img src="/thumbs/DSC_0379.jpg" alt="DSC_0379"></a><div class="copy"><h2 class="title">14 / 巷尾靜藍</h2><p class="meta">2026-03-14 17:18 · NIKON Z f · f/8 · 1/125 s · ISO 100 · 85 mm</p><p class="links"><a href="/cheungchaw/DSC_0379.jpg" target="_blank">查看原圖</a></p></div></div>
+        <div class="card"><a class="thumb" href="/cheungchaw/DSC_0394.jpg" data-lightbox="15 / 風中的牌 · 2026-03-14 17:28 · NIKON Z f"><img src="/thumbs/DSC_0394.jpg" alt="DSC_0394"></a><div class="copy"><h2 class="title">15 / 風中的牌</h2><p class="meta">2026-03-14 17:28 · NIKON Z f · f/8 · 1/125 s · ISO 200 · 45 mm</p><p class="links"><a href="/cheungchaw/DSC_0394.jpg" target="_blank">查看原圖</a></p></div></div>
+        <div class="card"><a class="thumb" href="/cheungchaw/DSC_0399.JPG" data-lightbox="16 / 港灣晚照 · 2026-03-14 17:37 · NIKON Z f"><img src="/thumbs/DSC_0399.JPG" alt="DSC_0399"></a><div class="copy"><h2 class="title">16 / 港灣晚照</h2><p class="meta">2026-03-14 17:37 · NIKON Z f · f/8 · 1/250 s · ISO 100 · 24 mm</p><p class="links"><a href="/cheungchaw/DSC_0399.JPG" target="_blank">查看原圖</a><a href="https://www.google.com/maps/search/?api=1&query=22.211475,114.027077" target="_blank">地圖</a></p></div></div>
+        <div class="card"><a class="thumb" href="/cheungchaw/DSC_0401.JPG" data-lightbox="17 / 救生圈旁 · 2026-03-14 17:38 · NIKON Z f"><img src="/thumbs/DSC_0401.JPG" alt="DSC_0401"></a><div class="copy"><h2 class="title">17 / 救生圈旁</h2><p class="meta">2026-03-14 17:38 · NIKON Z f · f/8 · 1/250 s · ISO 180 · 34 mm</p><p class="links"><a href="/cheungchaw/DSC_0401.JPG" target="_blank">查看原圖</a><a href="https://www.google.com/maps/search/?api=1&query=22.211475,114.027077" target="_blank">地圖</a></p></div></div>
+        <div class="card"><a class="thumb" href="/cheungchaw/DSC_0417.jpg" data-lightbox="18 / 夜色初臨 · 2026-03-14 18:52 · NIKON Z f"><img src="/thumbs/DSC_0417.jpg" alt="DSC_0417"></a><div class="copy"><h2 class="title">18 / 夜色初臨</h2><p class="meta">2026-03-14 18:52 · NIKON Z f · f/2 · 1/250 s · ISO 2500 · 85 mm</p><p class="links"><a href="/cheungchaw/DSC_0417.jpg" target="_blank">查看原圖</a></p></div></div>
+        <div class="card"><a class="thumb" href="/cheungchaw/DSC_0419.JPG" data-lightbox="19 / 燈下小港 · 2026-03-14 18:53 · NIKON Z f"><img src="/thumbs/DSC_0419.JPG" alt="DSC_0419"></a><div class="copy"><h2 class="title">19 / 燈下小港</h2><p class="meta">2026-03-14 18:53 · NIKON Z f · f/2 · 1/125 s · ISO 1000 · 85 mm</p><p class="links"><a href="/cheungchaw/DSC_0419.JPG" target="_blank">查看原圖</a></p></div></div>
+        <div class="card"><a class="thumb" href="/cheungchaw/DSC_0434.JPG" data-lightbox="20 / 夜海微鹽 · 2026-03-14 18:58 · NIKON Z f"><img src="/thumbs/DSC_0434.JPG" alt="DSC_0434"></a><div class="copy"><h2 class="title">20 / 夜海微鹽</h2><p class="meta">2026-03-14 18:58 · NIKON Z f · f/2 · 1/125 s · ISO 3600 · 85 mm</p><p class="links"><a href="/cheungchaw/DSC_0434.JPG" target="_blank">查看原圖</a></p></div></div>
+        <div class="card"><a class="thumb" href="/cheungchaw/DSC_0438.jpg" data-lightbox="21 / 歸程之前 · 2026-03-14 19:01 · NIKON Z f"><img src="/thumbs/DSC_0438.jpg" alt="DSC_0438"></a><div class="copy"><h2 class="title">21 / 歸程之前</h2><p class="meta">2026-03-14 19:01 · NIKON Z f · f/2 · 1/125 s · ISO 4000 · 85 mm</p><p class="links"><a href="/cheungchaw/DSC_0438.jpg" target="_blank">查看原圖</a></p></div></div>
+      </div>
+
+      <aside class="sidebar">
+        <h2>長洲時間軸</h2>
+        <p>把這次長洲一日的拍攝路線整理成一條簡單時間軸，邊看照片邊對照當天的節奏與光線變化。</p>
+        <ol class="timeline">
+          <li><time class="time">14:32 - 14:53</time><strong>抵達碼頭</strong><span>從碼頭與靠岸小船開始，先記錄午後海面和第一眼的長洲氣氛。</span></li>
+          <li><time class="time">15:21</time><strong>穿過街口</strong><span>由開闊海面走進島上街巷，畫面開始轉向更貼近人的生活尺度。</span></li>
+          <li><time class="time">15:49 - 16:12</time><strong>漁船與海旁</strong><span>進入漁船停泊區，連續拍下有層次和船身線條感的畫面。</span></li>
+          <li><time class="time">16:36 - 16:56</time><strong>黃昏轉場</strong><span>光線開始轉暖，畫面中的對比和陰影更有味道，適合拍細節與留白。</span></li>
+          <li><time class="time">17:18 - 17:38</time><strong>港邊夕照</strong><span>黃昏階段的港邊視角最完整，既有船，也有遠處小鎮和天空層次。</span></li>
+          <li><time class="time">18:52 - 19:01</time><strong>入夜收尾</strong><span>最後幾張進入夜色與高 ISO 狀態，整組影集也在這裡收束成更安靜的情緒。</span></li>
+        </ol>
+      </aside>
+    </div>
+  </div>
+
+  <div class="lightbox" id="lightbox">
+    <div class="lightbox-backdrop" data-close="1"></div>
+    <figure class="lightbox-figure">
+      <button class="lightbox-close" type="button" aria-label="關閉">×</button>
+      <img id="lightbox-image" src="" alt="">
+      <div class="lightbox-meta">
+        <figcaption id="lightbox-caption"></figcaption>
+        <a class="lightbox-download" id="lightbox-download" href="" download target="_blank" rel="noopener">下載原圖</a>
+      </div>
+    </figure>
+  </div>
+
+  <script>
+    (function () {
+      const lightbox = document.getElementById("lightbox");
+      const lightboxImage = document.getElementById("lightbox-image");
+      const lightboxCaption = document.getElementById("lightbox-caption");
+      const lightboxDownload = document.getElementById("lightbox-download");
+      const closeButton = document.querySelector(".lightbox-close");
+      const photoOrder = {
+        "DSC_0249.JPG": "2026-03-14T14:32:20",
+        "DSC_0254.JPG": "2026-03-14T14:34:39",
+        "IMG_20260314_145322.jpg": "2026-03-14T14:53:22",
+        "DSC_0260.JPG": "2026-03-14T14:41:09",
+        "DSC_0274.JPG": "2026-03-14T15:21:35",
+        "DSC_0322.JPG": "2026-03-14T15:49:36",
+        "DSC_0324.JPG": "2026-03-14T15:51:03",
+        "DSC_0335.jpg": "2026-03-14T15:56:37",
+        "DSC_0340.JPG": "2026-03-14T16:11:09",
+        "DSC_0342.JPG": "2026-03-14T16:12:57",
+        "DSC_0343.jpg": "2026-03-14T16:36:58",
+        "DSC_0347.JPG": "2026-03-14T16:45:02",
+        "DSC_0352.JPG": "2026-03-14T16:56:04",
+        "DSC_0379.jpg": "2026-03-14T17:18:38",
+        "DSC_0394.jpg": "2026-03-14T17:28:25",
+        "DSC_0399.JPG": "2026-03-14T17:37:02",
+        "DSC_0401.JPG": "2026-03-14T17:38:38",
+        "DSC_0417.jpg": "2026-03-14T18:52:18",
+        "DSC_0419.JPG": "2026-03-14T18:53:30",
+        "DSC_0434.JPG": "2026-03-14T18:58:19",
+        "DSC_0438.jpg": "2026-03-14T19:01:10"
+      };
+
+      const gallery = document.querySelector(".gallery");
+      const cards = Array.from(document.querySelectorAll(".gallery .card"));
+      cards.sort((a, b) => {
+        const aName = decodeURIComponent(a.querySelector(".thumb").getAttribute("href").split("/").pop());
+        const bName = decodeURIComponent(b.querySelector(".thumb").getAttribute("href").split("/").pop());
+        return (photoOrder[aName] || "").localeCompare(photoOrder[bName] || "");
+      });
+      cards.forEach((card) => gallery.appendChild(card));
+
+      document.querySelectorAll(".thumb").forEach((link) => {
+        const card = link.closest(".card");
+        const image = link.querySelector("img");
+        const syncCardRatio = () => {
+          if (!card || !image || !image.naturalWidth || !image.naturalHeight) return;
+          const ratio = image.naturalWidth / image.naturalHeight;
+          const boundedRatio = Math.max(0.68, Math.min(1.75, ratio));
+          card.style.setProperty("--card-ratio", boundedRatio.toFixed(3));
+        };
+        if (image) {
+          if (image.complete) {
+            syncCardRatio();
+          } else {
+            image.addEventListener("load", syncCardRatio, { once: true });
+          }
+          image.addEventListener(
+            "error",
+            () => {
+              image.src = link.href;
+            },
+            { once: true }
+          );
+        }
+        link.addEventListener("click", (event) => {
+          event.preventDefault();
+          lightboxImage.src = link.href;
+          lightboxImage.alt = link.querySelector("img")?.alt || "";
+          lightboxCaption.textContent = link.dataset.lightbox || "";
+          lightboxDownload.href = link.href;
+          lightboxDownload.setAttribute("download", decodeURIComponent(link.href.split("/").pop()));
+          lightbox.classList.add("is-open");
+          document.body.style.overflow = "hidden";
+        });
+      });
+
+      function closeLightbox() {
+        lightbox.classList.remove("is-open");
+        document.body.style.overflow = "";
+        setTimeout(() => {
+          lightboxImage.src = "";
+          lightboxDownload.href = "";
+        }, 180);
+      }
+
+      lightbox.addEventListener("click", (event) => {
+        if (event.target.dataset.close === "1") {
+          closeLightbox();
+        }
+      });
+
+      closeButton.addEventListener("click", closeLightbox);
+
+      document.addEventListener("keydown", (event) => {
+        if (event.key === "Escape" && lightbox.classList.contains("is-open")) {
+          closeLightbox();
+        }
+      });
+
+      function createEngagement(photoId) {
+        const section = document.createElement("div");
+        section.className = "engagement";
+        section.innerHTML = `
+          <div class="engagement-bar">
+            <div class="engagement-actions">
+              <button class="action-button like-button" type="button" aria-label="點贊">
+                <span class="action-icon">♡</span>
+                <span class="action-count">0</span>
+              </button>
+              <button class="action-button comment-toggle" type="button" aria-label="打開評論" aria-expanded="false">
+                <span class="action-icon">◌</span>
+                <span class="action-count">0</span>
+              </button>
+            </div>
+          </div>
+          <div class="comment-panel">
+            <div class="comment-panel-inner">
+              <div class="comment-list"></div>
+              <form class="comment-form">
+                <input name="author" maxlength="40" placeholder="你的名字" required>
+                <textarea name="body" maxlength="500" placeholder="留下一句感受..." required></textarea>
+                <button type="submit">發表評論</button>
+              </form>
+            </div>
+          </div>
+        `;
+
+        const likeButton = section.querySelector(".like-button");
+        const likeCount = likeButton.querySelector(".action-count");
+        const commentToggle = section.querySelector(".comment-toggle");
+        const commentCount = commentToggle.querySelector(".action-count");
+        const commentPanel = section.querySelector(".comment-panel");
+        const commentList = section.querySelector(".comment-list");
+        const form = section.querySelector(".comment-form");
+
+        function setCommentsOpen(nextState) {
+          commentPanel.classList.toggle("is-open", nextState);
+          commentToggle.setAttribute("aria-expanded", nextState ? "true" : "false");
+        }
+
+        function renderComments(comments) {
+          commentCount.textContent = String(comments.length);
+          commentList.innerHTML = "";
+          if (!comments.length) {
+            commentList.innerHTML = '<div class="comment-item"><p class="comment-body">還沒有評論，來留下第一句吧。</p></div>';
+            return;
+          }
+          comments.forEach((item) => {
+            const row = document.createElement("div");
+            row.className = "comment-item";
+            row.innerHTML = `
+              <div class="comment-head">
+                <span class="comment-author">${item.author}</span>
+                <span>${item.location_label || item.masked_ip || "未知位置"}</span>
+                <span>${new Date(item.created_at).toLocaleString()}</span>
+              </div>
+              <p class="comment-body">${item.body}</p>
+            `;
+            commentList.appendChild(row);
+          });
+        }
+
+        async function refresh() {
+          const response = await fetch(`/api/engagement?photo_id=${encodeURIComponent(photoId)}`);
+          const data = await response.json();
+          likeCount.textContent = String(data.likes || 0);
+          renderComments(data.comments || []);
+        }
+
+        likeButton.addEventListener("click", async () => {
+          const response = await fetch("/api/like", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ photo_id: photoId })
+          });
+          const data = await response.json();
+          likeCount.textContent = String(data.likes || 0);
+          likeButton.classList.toggle("is-liked", !!data.liked);
+          renderComments(data.comments || []);
+        });
+
+        commentToggle.addEventListener("click", () => {
+          setCommentsOpen(!commentPanel.classList.contains("is-open"));
+        });
+
+        form.addEventListener("submit", async (event) => {
+          event.preventDefault();
+          const formData = new FormData(form);
+          const payload = {
+            photo_id: photoId,
+            author: String(formData.get("author") || "").trim(),
+            body: String(formData.get("body") || "").trim()
+          };
+          if (!payload.author || !payload.body) return;
+          const response = await fetch("/api/comment", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload)
+          });
+          const data = await response.json();
+          form.reset();
+          likeCount.textContent = String(data.likes || 0);
+          setCommentsOpen(true);
+          renderComments(data.comments || []);
+        });
+
+        refresh().catch(() => {
+          commentCount.textContent = "0";
+          commentList.innerHTML = '<div class="comment-item"><p class="comment-body">互動功能暫時未連接成功。</p></div>';
+        });
+
+        return section;
+      }
+
+      document.querySelectorAll(".gallery .card").forEach((card) => {
+        const href = card.querySelector(".thumb").getAttribute("href");
+        const photoId = decodeURIComponent(href.split("/").pop());
+        card.querySelector(".copy").appendChild(createEngagement(photoId));
+      });
+    })();
+  </script>
+</body>
+</html>
+

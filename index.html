@@ -1,0 +1,875 @@
+<!DOCTYPE html>
+<html lang="zh-Hant-HK">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>SimonDPhotograph | 香港與旅行攝影作品集</title>
+  <meta name="description" content="SimonDPhotograph 的個人攝影首頁，收錄香港與旅行攝影作品，現已上線《長洲之旅》完整影集與互動頁面。">
+  <meta name="theme-color" content="#edf8fd">
+  <meta property="og:title" content="SimonDPhotograph | 香港與旅行攝影作品集">
+  <meta property="og:description" content="以光線、海邊、街角和日常氛圍為主軸的個人攝影首頁，現可直接進入《長洲之旅》影集。">
+  <meta property="og:type" content="website">
+  <meta property="og:url" content="https://simond.photo/">
+  <meta property="og:image" content="https://simond.photo/thumbs/DSC_0399.JPG">
+  <meta name="twitter:card" content="summary_large_image">
+  <link rel="canonical" href="https://simond.photo/">
+  <link rel="preload" as="image" href="/thumbs/DSC_0399.JPG">
+  <script type="application/ld+json">
+    {
+      "@context": "https://schema.org",
+      "@type": "WebSite",
+      "name": "SimonDPhotograph",
+      "url": "https://simond.photo/",
+      "inLanguage": "zh-Hant-HK",
+      "description": "SimonDPhotograph 的個人攝影首頁，收錄香港與旅行攝影作品，現已上線《長洲之旅》完整影集與互動頁面。"
+    }
+  </script>
+  <style>
+    :root {
+      --bg: #edf8fd;
+      --panel: rgba(255, 255, 255, 0.8);
+      --panel-strong: rgba(255, 255, 255, 0.92);
+      --line: rgba(31, 79, 110, 0.14);
+      --text: #153449;
+      --muted: #5f7b8b;
+      --accent: #1f6fb2;
+      --accent-soft: #5cd6dd;
+      --danger: #d64b63;
+      --shadow: 0 24px 60px rgba(70, 124, 150, 0.14);
+      --radius-xl: 32px;
+      --wrap: min(1180px, calc(100vw - 32px));
+    }
+
+    * { box-sizing: border-box; }
+
+    html {
+      scroll-behavior: smooth;
+      scroll-padding-top: 100px;
+    }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      color: var(--text);
+      font-family: "PingFang HK", "Noto Sans TC", "Microsoft JhengHei UI", sans-serif;
+      background:
+        radial-gradient(circle at top left, rgba(92, 214, 221, 0.24), transparent 26%),
+        radial-gradient(circle at 82% 12%, rgba(124, 180, 255, 0.2), transparent 24%),
+        linear-gradient(180deg, #f7fdff 0%, #e6f3fa 100%);
+    }
+
+    body::before {
+      content: "";
+      position: fixed;
+      inset: 0;
+      pointer-events: none;
+      background:
+        linear-gradient(rgba(31, 111, 178, 0.035) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(31, 111, 178, 0.035) 1px, transparent 1px);
+      background-size: 34px 34px;
+      opacity: 0.55;
+    }
+
+    a {
+      color: inherit;
+      text-decoration: none;
+    }
+
+    img {
+      display: block;
+      max-width: 100%;
+    }
+
+    .wrap {
+      position: relative;
+      z-index: 1;
+      width: var(--wrap);
+      margin: 0 auto;
+      padding: 24px 0 56px;
+    }
+
+    .site-header {
+      position: sticky;
+      top: 16px;
+      z-index: 20;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      padding: 14px 18px;
+      margin-bottom: 28px;
+      background: rgba(255, 255, 255, 0.72);
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      box-shadow: var(--shadow);
+      backdrop-filter: blur(16px);
+    }
+
+    .brand {
+      display: inline-flex;
+      align-items: center;
+      gap: 14px;
+      min-width: 0;
+    }
+
+    .brand-mark {
+      display: grid;
+      place-items: center;
+      width: 48px;
+      height: 48px;
+      border-radius: 50%;
+      background: linear-gradient(135deg, var(--accent-soft) 0%, var(--accent) 100%);
+      color: #fff;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+    }
+
+    .brand-copy {
+      display: grid;
+      gap: 3px;
+      min-width: 0;
+    }
+
+    .brand-copy strong {
+      font-size: 1rem;
+      line-height: 1.1;
+    }
+
+    .brand-copy span {
+      color: var(--muted);
+      font-size: 0.86rem;
+    }
+
+    .header-right {
+      display: flex;
+      align-items: center;
+      gap: 18px;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+    }
+
+    .site-nav {
+      display: flex;
+      align-items: center;
+      gap: 20px;
+      color: var(--muted);
+      font-size: 0.95rem;
+    }
+
+    .admin-entry {
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+    }
+
+    .admin-status {
+      color: var(--muted);
+      font-size: 0.9rem;
+    }
+
+    .admin-pill,
+    .button {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      border-radius: 999px;
+      transition: transform 180ms ease, border-color 180ms ease, box-shadow 180ms ease, color 180ms ease, background 180ms ease;
+    }
+
+    .admin-pill:hover,
+    .admin-pill:focus-visible,
+    .button:hover,
+    .button:focus-visible,
+    .collection-card:hover,
+    .collection-card:focus-visible {
+      transform: translateY(-2px);
+    }
+
+    .admin-pill {
+      min-height: 38px;
+      padding: 0 14px;
+      border: 1px solid rgba(31, 111, 178, 0.14);
+      background: rgba(255, 255, 255, 0.82);
+      color: var(--accent);
+      font: inherit;
+      cursor: pointer;
+    }
+
+    .admin-pill.logout {
+      color: var(--danger);
+      border-color: rgba(214, 75, 99, 0.18);
+    }
+
+    .admin-link[hidden],
+    .admin-pill[hidden] {
+      display: none !important;
+    }
+
+    .hero,
+    .section,
+    .note,
+    .owner-panel {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: var(--radius-xl);
+      box-shadow: var(--shadow);
+      backdrop-filter: blur(16px);
+    }
+
+    .hero {
+      display: grid;
+      grid-template-columns: minmax(0, 1.08fr) minmax(320px, 0.92fr);
+      gap: 28px;
+      padding: 36px;
+    }
+
+    .owner-panel {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      padding: 20px 22px;
+      margin-top: 20px;
+    }
+
+    .owner-panel-copy {
+      display: grid;
+      gap: 6px;
+    }
+
+    .owner-panel-copy strong {
+      font-size: 1rem;
+    }
+
+    .owner-panel-copy span {
+      color: var(--muted);
+      line-height: 1.7;
+      font-size: 0.94rem;
+    }
+
+    .owner-panel-actions {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+    }
+
+    .eyebrow {
+      margin: 0 0 12px;
+      color: var(--accent);
+      font-size: 0.78rem;
+      font-weight: 700;
+      letter-spacing: 0.2em;
+      text-transform: uppercase;
+    }
+
+    h1, h2, h3 {
+      margin: 0;
+      line-height: 1;
+    }
+
+    h1 {
+      font-size: clamp(2.8rem, 6vw, 5.2rem);
+      letter-spacing: -0.05em;
+    }
+
+    .intro {
+      max-width: 58ch;
+      margin: 20px 0 0;
+      color: var(--muted);
+      line-height: 1.9;
+      font-size: 1rem;
+    }
+
+    .hero-stats {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+      margin-top: 24px;
+    }
+
+    .chip {
+      padding: 10px 14px;
+      border-radius: 999px;
+      border: 1px solid rgba(31, 111, 178, 0.14);
+      background: rgba(255, 255, 255, 0.78);
+      color: var(--muted);
+      font-size: 0.92rem;
+    }
+
+    .chip strong {
+      color: var(--text);
+    }
+
+    .hero-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 14px;
+      margin-top: 26px;
+    }
+
+    .button,
+    .collection-card {
+      transition: transform 180ms ease, border-color 180ms ease, box-shadow 180ms ease;
+    }
+
+    .button {
+      min-height: 50px;
+      padding: 0 22px;
+      font-weight: 700;
+    }
+
+    .button-primary {
+      background: linear-gradient(135deg, var(--accent-soft) 0%, #4a8df4 100%);
+      color: #fff;
+      box-shadow: 0 16px 32px rgba(74, 141, 244, 0.2);
+    }
+
+    .button-secondary {
+      border: 1px solid rgba(31, 111, 178, 0.12);
+      background: rgba(255, 255, 255, 0.78);
+      color: var(--accent);
+    }
+
+    .hero-visual {
+      display: grid;
+      gap: 16px;
+      align-content: start;
+    }
+
+    .hero-photo {
+      min-height: 420px;
+      overflow: hidden;
+      border-radius: 28px;
+      background: #d2e4f3;
+      border: 1px solid rgba(31, 111, 178, 0.08);
+    }
+
+    .hero-photo img {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+    }
+
+    .hero-note {
+      padding: 18px;
+      border-radius: 22px;
+      background: rgba(255, 255, 255, 0.68);
+      border: 1px solid rgba(31, 111, 178, 0.08);
+      color: var(--muted);
+      line-height: 1.8;
+    }
+
+    .section {
+      padding: 30px;
+      margin-top: 24px;
+      content-visibility: auto;
+      contain-intrinsic-size: 1px 720px;
+    }
+
+    .section-head {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) minmax(280px, 420px);
+      gap: 22px;
+      align-items: end;
+      margin-bottom: 22px;
+    }
+
+    .section-head p,
+    .collection-copy p,
+    .note p,
+    .about-card p {
+      color: var(--muted);
+      line-height: 1.8;
+    }
+
+    .collection-grid {
+      display: grid;
+      grid-template-columns: minmax(0, 1.2fr) minmax(280px, 0.8fr);
+      gap: 18px;
+    }
+
+    .collection-card {
+      display: grid;
+      grid-template-columns: minmax(250px, 0.78fr) minmax(0, 1fr);
+      gap: 18px;
+      padding: 18px;
+      border-radius: 28px;
+      background: var(--panel-strong);
+      border: 1px solid rgba(31, 111, 178, 0.08);
+      box-shadow: 0 22px 44px rgba(70, 124, 150, 0.12);
+    }
+
+    .collection-photo {
+      min-height: 250px;
+      overflow: hidden;
+      border-radius: 22px;
+      background: #d5e8f6;
+    }
+
+    .collection-photo img {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+    }
+
+    .collection-copy,
+    .meta,
+    .about-grid {
+      display: grid;
+      gap: 16px;
+    }
+
+    .meta {
+      font-size: 0.92rem;
+      color: var(--muted);
+    }
+
+    .note {
+      padding: 22px;
+    }
+
+    .about-grid {
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 16px;
+      margin-top: 20px;
+    }
+
+    .about-card {
+      padding: 18px;
+      border-radius: 20px;
+      background: rgba(255, 255, 255, 0.66);
+      border: 1px solid rgba(31, 111, 178, 0.08);
+    }
+
+    .about-card h3 {
+      font-size: 1.05rem;
+      margin-bottom: 10px;
+    }
+
+    .admin-modal {
+      position: fixed;
+      inset: 0;
+      z-index: 100;
+      display: none;
+      align-items: center;
+      justify-content: center;
+      padding: 24px;
+      background: rgba(12, 29, 42, 0.42);
+      backdrop-filter: blur(8px);
+    }
+
+    .admin-modal.is-open {
+      display: flex;
+    }
+
+    .admin-modal-card {
+      width: min(420px, calc(100vw - 32px));
+      padding: 24px;
+      border-radius: 28px;
+      border: 1px solid rgba(31, 111, 178, 0.14);
+      background: rgba(255, 255, 255, 0.94);
+      box-shadow: 0 24px 60px rgba(21, 52, 73, 0.2);
+    }
+
+    .admin-modal-card h2 {
+      margin-bottom: 10px;
+      font-size: 1.5rem;
+    }
+
+    .admin-modal-card p {
+      margin: 0 0 18px;
+      color: var(--muted);
+      line-height: 1.7;
+    }
+
+    .admin-login-form {
+      display: grid;
+      gap: 12px;
+    }
+
+    .admin-login-form input {
+      width: 100%;
+      min-height: 48px;
+      padding: 0 14px;
+      border: 1px solid rgba(31, 111, 178, 0.16);
+      border-radius: 16px;
+      font: inherit;
+      color: var(--text);
+      background: rgba(255, 255, 255, 0.94);
+    }
+
+    .admin-login-actions {
+      display: flex;
+      justify-content: flex-end;
+      gap: 10px;
+    }
+
+    .admin-login-actions button {
+      min-height: 44px;
+      padding: 0 18px;
+      border-radius: 999px;
+      font: inherit;
+      cursor: pointer;
+    }
+
+    .admin-login-submit {
+      border: none;
+      background: linear-gradient(135deg, var(--accent-soft) 0%, #4a8df4 100%);
+      color: #fff;
+      font-weight: 700;
+    }
+
+    .admin-login-cancel {
+      border: 1px solid rgba(31, 111, 178, 0.14);
+      background: rgba(255, 255, 255, 0.82);
+      color: var(--accent);
+    }
+
+    .admin-login-error {
+      min-height: 20px;
+      color: var(--danger);
+      font-size: 0.92rem;
+    }
+
+    @media (max-width: 980px) {
+      .hero,
+      .collection-grid,
+      .collection-card,
+      .about-grid,
+      .section-head {
+        grid-template-columns: 1fr;
+      }
+
+      .owner-panel {
+        flex-direction: column;
+        align-items: flex-start;
+      }
+
+      .site-header {
+        flex-direction: column;
+        align-items: flex-start;
+        border-radius: 28px;
+      }
+
+      .header-right {
+        width: 100%;
+        justify-content: space-between;
+      }
+
+      .site-nav {
+        flex-wrap: wrap;
+      }
+
+      .hero-photo {
+        min-height: 300px;
+      }
+    }
+
+    @media (max-width: 640px) {
+      .wrap {
+        width: min(calc(100vw - 20px), 1180px);
+        padding-top: 8px;
+      }
+
+      .hero,
+      .section,
+      .note,
+      .owner-panel {
+        padding: 18px;
+      }
+
+      .site-header {
+        gap: 8px;
+        padding: 8px 12px;
+        border-radius: 18px;
+      }
+
+      .brand {
+        gap: 8px;
+      }
+
+      .brand-mark {
+        width: 36px;
+        height: 36px;
+        font-size: 0.88rem;
+      }
+
+      .brand-copy strong {
+        font-size: 0.94rem;
+      }
+
+      .brand-copy span,
+      .site-nav,
+      .admin-status {
+        font-size: 0.8rem;
+      }
+
+      .header-right {
+        gap: 10px;
+      }
+
+      .site-nav {
+        gap: 12px;
+      }
+
+      .admin-entry {
+        gap: 8px;
+      }
+
+      h1 {
+        font-size: 2.15rem;
+      }
+
+      .button,
+      .admin-pill {
+        min-height: 44px;
+        padding: 0 18px;
+      }
+
+      .collection-card {
+        padding: 14px;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap" id="top">
+    <header class="site-header">
+      <a class="brand" href="/index.html" aria-label="返回首頁">
+        <span class="brand-mark">SD</span>
+        <span class="brand-copy">
+          <strong>SimonDPhotograph</strong>
+          <span>Hong Kong and travel photography</span>
+        </span>
+      </a>
+      <div class="header-right">
+        <nav class="site-nav" aria-label="主頁導覽">
+          <a href="#featured">精選影集</a>
+          <a href="#about">網站方向</a>
+          <a href="/cheungchau.html">進入作品</a>
+        </nav>
+        <div class="admin-entry">
+          <span class="admin-status" id="admin-status">訪客模式</span>
+          <a class="admin-pill admin-link" id="admin-stats-link" href="/admin-stats.html" hidden>數據統計</a>
+          <button class="admin-pill" id="admin-login" type="button">站主登入</button>
+          <button class="admin-pill logout" id="admin-logout" type="button" hidden>登出</button>
+        </div>
+      </div>
+    </header>
+
+    <main>
+      <section class="hero">
+        <div>
+          <p class="eyebrow">SimonDPhotograph</p>
+          <h1>把海邊、街角與光線<br>留在同一個入口裡。</h1>
+          <p class="intro">
+            這是 Simon 的個人攝影首頁。網站目前先集中呈現第一組正式影集《長洲之旅》，
+            之後可以沿用同一套結構擴充更多香港、旅行或街頭作品。
+          </p>
+          <div class="hero-stats" aria-label="網站概覽">
+            <span class="chip"><strong>1</strong> 組正式影集</span>
+            <span class="chip"><strong>21</strong> 張已整理照片</span>
+            <span class="chip"><strong>EXIF / GPS</strong> 已整合</span>
+          </div>
+          <div class="hero-actions">
+            <a class="button button-primary" href="/cheungchau.html">進入《長洲之旅》</a>
+            <a class="button button-secondary" href="#featured">查看精選影集</a>
+          </div>
+        </div>
+
+        <aside class="hero-visual" aria-label="精選預覽">
+          <div class="hero-photo">
+            <img src="/thumbs/DSC_0399.JPG" alt="長洲之旅精選預覽" width="6048" height="4032" fetchpriority="high">
+          </div>
+          <div class="hero-note">
+            <p>首頁保留最重要的入口與定位，讓訪客能更快進到作品本身；站主登入後，三個頁面都會共用同一組管理狀態與統計入口。</p>
+          </div>
+        </aside>
+      </section>
+
+      <section class="owner-panel">
+        <div class="owner-panel-copy">
+          <strong>站主管理入口已擴展到全站頁面</strong>
+          <span>首頁、長洲之旅和數據統計頁現在共用 `simond.photo` 下面的站主登入 API。登入後可直接跳到統計頁查看互動數據。</span>
+        </div>
+        <div class="owner-panel-actions">
+          <a class="admin-pill admin-link" id="owner-panel-stats" href="/admin-stats.html" hidden>打開數據統計</a>
+          <a class="admin-pill" href="/cheungchau.html">前往作品頁</a>
+        </div>
+      </section>
+
+      <section class="section" id="featured">
+        <div class="section-head">
+          <div>
+            <p class="eyebrow">Featured Collection</p>
+            <h2>精選影集</h2>
+          </div>
+          <p>先把目前最成熟的一組作品頁做完整，比堆很多半成品更有識別度，也更適合後續持續擴充。</p>
+        </div>
+
+        <div class="collection-grid">
+          <a class="collection-card" href="/cheungchau.html" aria-label="進入長洲之旅影集">
+            <div class="collection-photo">
+              <img src="/thumbs/DSC_0249.JPG" alt="長洲之旅封面" loading="lazy" decoding="async" width="6048" height="4032">
+            </div>
+            <div class="collection-copy">
+              <div>
+                <p class="eyebrow">Hong Kong</p>
+                <h3>長洲之旅</h3>
+                <p>從碼頭、街角、堤岸到入夜後的海邊，這組作品保留了完整節奏，也整合了 EXIF、GPS、原圖查看、地圖與評論互動。</p>
+              </div>
+              <div class="meta">
+                <span><strong>照片數量：</strong>21 張</span>
+                <span><strong>互動能力：</strong>點讚、評論、回覆、置頂與樓層</span>
+                <span><strong>入口：</strong>/cheungchau.html</span>
+              </div>
+            </div>
+          </a>
+
+          <div class="note">
+            <p class="eyebrow">Next Step</p>
+            <h3>後續擴充方式</h3>
+            <p>之後新增澳門、台北、東京或街拍系列時，可以沿用這套首頁加作品頁的結構，不需要每次重做整個網站。</p>
+          </div>
+        </div>
+      </section>
+
+      <section class="section" id="about">
+        <div class="section-head">
+          <div>
+            <p class="eyebrow">Site Direction</p>
+            <h2>網站方向</h2>
+          </div>
+          <p>這次優化重點不是把首頁做得更花，而是讓入口更清楚、作品頁更完整、站主權限更統一。</p>
+        </div>
+
+        <div class="about-grid">
+          <article class="about-card">
+            <h3>清楚入口</h3>
+            <p>首頁專注在品牌和作品入口，避免訪客先被大量資訊分散注意力。</p>
+          </article>
+          <article class="about-card">
+            <h3>全站站主狀態</h3>
+            <p>站主登入態現在以 `simond.photo` 根路徑 cookie 共用，三個頁面都可識別同一權限。</p>
+          </article>
+          <article class="about-card">
+            <h3>後續擴展</h3>
+            <p>新影集只需補素材和封面即可，同時維持互動、統計與站主工具的一致性。</p>
+          </article>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <div class="admin-modal" id="admin-modal" aria-hidden="true">
+    <div class="admin-modal-card">
+      <h2>站主登入</h2>
+      <p>登入後首頁會顯示站主狀態，並開放數據統計入口；作品頁與統計頁也會同步識別這個登入態。</p>
+      <form class="admin-login-form" id="admin-login-form">
+        <input id="admin-password" name="password" type="password" placeholder="輸入站主密碼" autocomplete="current-password" required>
+        <div class="admin-login-error" id="admin-login-error"></div>
+        <div class="admin-login-actions">
+          <button class="admin-login-cancel" id="admin-login-cancel" type="button">取消</button>
+          <button class="admin-login-submit" type="submit">登入</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <script>
+    (async function () {
+      const adminStatus = document.getElementById("admin-status");
+      const adminStatsLink = document.getElementById("admin-stats-link");
+      const ownerPanelStats = document.getElementById("owner-panel-stats");
+      const adminLoginButton = document.getElementById("admin-login");
+      const adminLogoutButton = document.getElementById("admin-logout");
+      const adminModal = document.getElementById("admin-modal");
+      const adminLoginForm = document.getElementById("admin-login-form");
+      const adminPasswordInput = document.getElementById("admin-password");
+      const adminLoginCancel = document.getElementById("admin-login-cancel");
+      const adminLoginError = document.getElementById("admin-login-error");
+      const adminState = { authenticated: false, display_name: "SimonD（站主）" };
+
+      function syncAdminEntry() {
+        adminStatus.textContent = adminState.authenticated ? `已登入：${adminState.display_name}` : "訪客模式";
+        adminLoginButton.hidden = adminState.authenticated;
+        adminLogoutButton.hidden = !adminState.authenticated;
+        adminStatsLink.hidden = !adminState.authenticated;
+        ownerPanelStats.hidden = !adminState.authenticated;
+      }
+
+      function openAdminModal() {
+        adminModal.classList.add("is-open");
+        adminModal.setAttribute("aria-hidden", "false");
+        adminLoginError.textContent = "";
+        adminLoginForm.reset();
+        window.setTimeout(() => adminPasswordInput.focus(), 0);
+      }
+
+      function closeAdminModal() {
+        adminModal.classList.remove("is-open");
+        adminModal.setAttribute("aria-hidden", "true");
+        adminLoginError.textContent = "";
+        adminLoginForm.reset();
+      }
+
+      async function fetchAdminStatus() {
+        const response = await fetch("/api/admin/status");
+        if (!response.ok) throw new Error("Failed to load admin status");
+        return response.json();
+      }
+
+      async function adminLogin(password) {
+        const response = await fetch("/api/admin/login", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ password })
+        });
+        if (!response.ok) throw new Error("Invalid password");
+        closeAdminModal();
+        window.location.reload();
+      }
+
+      async function adminLogout() {
+        await fetch("/api/admin/logout", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({})
+        });
+        window.location.reload();
+      }
+
+      adminLoginButton.addEventListener("click", openAdminModal);
+      adminLogoutButton.addEventListener("click", adminLogout);
+      adminLoginCancel.addEventListener("click", closeAdminModal);
+      adminModal.addEventListener("click", (event) => {
+        if (event.target === adminModal) closeAdminModal();
+      });
+      document.addEventListener("keydown", (event) => {
+        if (event.key === "Escape" && adminModal.classList.contains("is-open")) closeAdminModal();
+      });
+      adminLoginForm.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        adminLoginError.textContent = "";
+        try {
+          await adminLogin(adminPasswordInput.value);
+        } catch (error) {
+          adminLoginError.textContent = "密碼不正確，請再試一次。";
+        }
+      });
+
+      try {
+        const status = await fetchAdminStatus();
+        adminState.authenticated = Boolean(status.authenticated);
+        adminState.display_name = status.display_name || adminState.display_name;
+      } catch (error) {
+        adminState.authenticated = false;
+      }
+      syncAdminEntry();
+    })();
+  </script>
+</body>
+</html>
