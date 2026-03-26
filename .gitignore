@@ -6,6 +6,9 @@ cheungchau-plain.html
 nginx-default.conf
 robots.txt
 sitemap.xml
+metrics_collector.py
+site-metrics-collector.service
+site-metrics-collector.timer
 remote-default.conf
 remote-gemini-proxy.conf
 remote-google-proxy.conf
