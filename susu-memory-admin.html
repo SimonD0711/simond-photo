@@ -578,15 +578,6 @@
       ],
     },
     {
-      title: '模型路由',
-      desc: '這裡決定主要模型、夜晚 fallback 模型，以及 Gemini 後備模型名稱。',
-      fields: [
-        { key: 'relay_model', label: '主要 Relay 模型', type: 'text', hint: '日常時段優先使用的 Claude / Relay 模型。' },
-        { key: 'relay_fallback_model', label: '夜晚 / 備援 Relay 模型', type: 'text', hint: '夜間主動或主要 Relay 失敗時優先切到這個模型。' },
-        { key: 'gemini_model', label: 'Gemini 後備模型', type: 'text', hint: 'Relay 不可用時使用的 Gemini 模型名稱。' },
-      ],
-    },
-    {
       title: '主動訊息參數',
       desc: '控制苏苏幾時會主動開話題，以及掃描頻率、冷卻時間、回覆視窗等限制。改完約 5 秒內生效。',
       className: 'full',

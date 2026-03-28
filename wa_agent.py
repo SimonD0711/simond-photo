@@ -49,8 +49,9 @@ PROACTIVE_CONVERSATION_WINDOW_HOURS = int(os.environ.get("WA_PROACTIVE_CONVERSAT
 PROACTIVE_MAX_PER_SERVICE_DAY = int(os.environ.get("WA_PROACTIVE_MAX_PER_SERVICE_DAY", "2"))
 PROACTIVE_MIN_INBOUND_MESSAGES = int(os.environ.get("WA_PROACTIVE_MIN_INBOUND_MESSAGES", "8"))
 
+SUSU_LOCKED_RELAY_MODEL = "claude-opus-4-6"
 RELAY_API_KEY = os.environ.get("WA_RELAY_API_KEY", "")
-RELAY_MODEL = os.environ.get("WA_RELAY_MODEL", "claude-opus-4-6")
+RELAY_MODEL = os.environ.get("WA_RELAY_MODEL", SUSU_LOCKED_RELAY_MODEL)
 RELAY_FALLBACK_MODEL = os.environ.get("WA_RELAY_FALLBACK_MODEL", "claude-sonnet-4-6")
 RELAY_BASE_URL = os.environ.get("WA_RELAY_BASE_URL", "https://apiapipp.com/v1")
 
@@ -83,6 +84,7 @@ else:
 PUNCTUATION = "。！？!?~～…"
 HKO_OPEN_DATA_BASE_URL = "https://data.weather.gov.hk/weatherAPI/opendata/weather.php"
 LIVE_LOOKUP_CACHE_SECONDS = 180
+LIVE_SEARCH_ROUTER_CACHE_SECONDS = 120
 _live_lookup_cache = {}
 _live_lookup_cache_lock = threading.Lock()
 _reply_worker_states = {}
@@ -102,7 +104,9 @@ EXPLICIT_SEARCH_HINTS = (
     "search", "lookup", "google", "上網", "網上", "online search",
 )
 NEWS_QUERY_KEYWORDS = (
-    "新聞", "news", "頭條", "headline", "最新消息", "最新新聞", "即時", "突發",
+    "新聞", "新闻", "大新聞", "大新闻", "news", "頭條", "头条", "headline",
+    "最新消息", "最新新聞", "最新新闻", "即時", "即时", "突發", "突发",
+    "有咩新聞", "有咩新闻", "有乜新聞", "有乜新闻", "發生咩事", "发生咩事",
 )
 LIVE_TIME_HINTS = (
     "最新", "而家", "依家", "宜家", "現在", "现在", "今日", "今天", "即時", "current", "today",
@@ -111,6 +115,52 @@ FACT_QUERY_HINTS = (
     "係咪", "是嗎", "係唔係", "是不是", "有冇", "有沒有", "會唔會", "会不会",
     "幾多", "多少", "幾時", "何時", "點樣", "如何", "邊個", "哪个", "誰", "谁", "？", "?",
 )
+MUSIC_QUERY_KEYWORDS = (
+    "新歌", "最新歌", "新出的歌", "最近嘅歌", "最近的歌", "新專輯", "新专辑",
+    "最新專輯", "最新专辑", "新單曲", "新单曲",
+)
+MUSIC_RECOMMENDATION_HINTS = (
+    "邊首", "边首", "哪首", "咩歌", "乜歌", "好聽", "好听", "推薦", "推荐",
+)
+SEARCH_ENTITY_ALIASES = {
+    "周董": "周杰倫",
+    "杰倫": "周杰倫",
+    "杰伦": "周杰倫",
+    "周董哥": "周杰倫",
+    "jay chou": "周杰倫",
+}
+GENERIC_MUSIC_TERMS = (
+    "歌", "歌曲", "新歌", "音樂", "音乐", "單曲", "单曲", "專輯", "专辑", "mv", "album", "single",
+)
+HK_NEWS_PREFERRED_DOMAINS = (
+    "rthk.hk",
+    "news.gov.hk",
+    "hk01.com",
+    "mingpao.com",
+    "hket.com",
+    "stheadline.com",
+    "am730.com.hk",
+    "on.cc",
+    "scmp.com",
+)
+GLOBAL_NEWS_PREFERRED_DOMAINS = (
+    "reuters.com",
+    "apnews.com",
+    "bbc.com",
+    "cnn.com",
+    "nytimes.com",
+    "theguardian.com",
+)
+MUSIC_PREFERRED_DOMAINS = (
+    "youtube.com",
+    "music.youtube.com",
+    "spotify.com",
+    "open.spotify.com",
+    "music.apple.com",
+    "kkbox.com",
+    "genius.com",
+    "wikipedia.org",
+)
 LIVE_SEARCH_SUMMARIZER_PROMPT = textwrap.dedent(
     """
     你係一個即時搜尋結果整理器。
@@ -118,7 +168,36 @@ LIVE_SEARCH_SUMMARIZER_PROMPT = textwrap.dedent(
     如果資料不足以直接下判斷，就坦白講「暫時見到嘅結果未夠準」，唔好亂估。
     回覆用繁體港式廣東話，似 WhatsApp，但清楚準確優先。
     如果內容同「今日 / 而家 / 最新」有關，盡量講清楚具體日期或者時間。
+    如果用戶問主觀偏好，例如「邊首好聽」，就先講清楚搜尋結果入面可驗證嘅客觀部分，例如最新發行、最近最多人提及；
+    如果要表達偏好，必須講明只係按搜尋結果熱度或者來源分佈去推斷，唔好扮成你知道真正答案。
     只輸出要發畀對方嘅回覆本身。
+    """
+).strip()
+LIVE_SEARCH_ROUTER_PROMPT = textwrap.dedent(
+    """
+    你係一個超輕量即時搜尋路由器，只做三件事：
+    1. 判斷用戶問題係咪需要上網查最新/即時/會變動嘅外部資料
+    2. 如果要，揀 mode：news、music、web、none
+    3. 產生短、乾淨、適合搜尋引擎嘅 query
+
+    規則：
+    - 只有當答案可能因時間而變，例如今日新聞、現時狀態、最新作品、即時事實，先 should_search=true
+    - 純閒聊、純主觀陪伴、唔使外部資料都答到嘅內容，should_search=false
+    - 問「邊首好聽」但同「新歌 / 最新 / 最近作品」一齊出現時，應先查最新作品，mode=music
+    - 幫手做簡單別名歸一化，例如「周董」->「周杰倫」
+    - query 唔好保留口頭禪、語氣詞、客套語
+    - 只輸出 JSON object，格式固定：
+      {"should_search": true, "mode": "news", "query": "香港 最新新聞", "confidence": 0.96}
+
+    例子：
+    用戶：你知唔知今天香港有咩大新聞呀
+    {"should_search": true, "mode": "news", "query": "香港 最新新聞", "confidence": 0.98}
+
+    用戶：周董新歌哪首好聽呀
+    {"should_search": true, "mode": "music", "query": "周杰倫 最新 新歌", "confidence": 0.94}
+
+    用戶：你掛唔掛住我
+    {"should_search": false, "mode": "none", "query": "", "confidence": 0.98}
     """
 ).strip()
 
@@ -248,9 +327,6 @@ RUNTIME_SETTINGS_CACHE = {"values": None, "expires_at": 0.0}
 SUSU_RUNTIME_SETTING_SPECS = {
     "system_persona": {"type": "multiline", "default": SYSTEM_PERSONA, "max_length": 12000},
     "primary_user_memory": {"type": "multiline", "default": PRIMARY_USER_MEMORY, "max_length": 12000},
-    "relay_model": {"type": "text", "default": RELAY_MODEL, "max_length": 120},
-    "relay_fallback_model": {"type": "text", "default": RELAY_FALLBACK_MODEL, "max_length": 120},
-    "gemini_model": {"type": "text", "default": GEMINI_MODEL, "max_length": 120},
     "proactive_enabled": {"type": "bool", "default": PROACTIVE_ENABLED},
     "proactive_scan_seconds": {"type": "int", "default": PROACTIVE_SCAN_SECONDS, "min": 60, "max": 3600},
     "proactive_min_silence_minutes": {"type": "int", "default": PROACTIVE_MIN_SILENCE_MINUTES, "min": 5, "max": 1440},
@@ -453,17 +529,7 @@ def style_window_text(now=None):
 
 
 def get_relay_model_order(now=None):
-    now = now or hk_now()
-    settings = get_runtime_settings()
-    relay_model = normalize_runtime_text(settings.get("relay_model"), RELAY_MODEL)
-    relay_fallback_model = normalize_runtime_text(settings.get("relay_fallback_model"), RELAY_FALLBACK_MODEL)
-    if is_night_mode(now):
-        primary = relay_fallback_model or relay_model
-        secondary = relay_model if relay_model != primary else ""
-    else:
-        primary = relay_model
-        secondary = relay_fallback_model if relay_fallback_model != primary else ""
-    return primary, secondary
+    return SUSU_LOCKED_RELAY_MODEL, ""
 
 
 def clean_text(value):
@@ -688,6 +754,8 @@ def should_do_live_search(text):
         return True
     if contains_any_keyword(value, NEWS_QUERY_KEYWORDS):
         return True
+    if is_music_query(value):
+        return True
     return contains_any_keyword(value, LIVE_TIME_HINTS) and contains_any_keyword(value, FACT_QUERY_HINTS)
 
 
@@ -696,16 +764,92 @@ def is_news_query(text):
     return contains_any_keyword(value, NEWS_QUERY_KEYWORDS)
 
 
-def extract_search_query(text, mode="web"):
+def normalize_search_entities(text):
     value = clean_text(text)
+    placeholders = {}
+    for index, (alias, canonical) in enumerate(
+        sorted(SEARCH_ENTITY_ALIASES.items(), key=lambda item: len(item[0]), reverse=True)
+    ):
+        placeholder = f"__SEARCH_ALIAS_{index}__"
+        pattern = re.escape(alias)
+        if canonical.endswith(alias) and len(canonical) > len(alias):
+            prefix = re.escape(canonical[:-len(alias)])
+            pattern = rf"(?<!{prefix}){pattern}"
+        updated = re.sub(pattern, placeholder, value, flags=re.I)
+        if updated != value:
+            value = updated
+            placeholders[placeholder] = canonical
+    for placeholder, canonical in placeholders.items():
+        value = value.replace(placeholder, canonical)
+    return re.sub(r"\s+", " ", value).strip()
+
+
+def dedupe_search_terms(text):
+    parts = []
+    seen = set()
+    for part in clean_text(text).split():
+        key = part.lower()
+        if key and key not in seen:
+            seen.add(key)
+            parts.append(part)
+    return " ".join(parts)
+
+
+def strip_search_tokens(text, tokens):
+    value = clean_text(text)
+    for token in sorted(set(tokens), key=len, reverse=True):
+        value = value.replace(token, " ")
+    return re.sub(r"\s+", " ", value).strip()
+
+
+def is_music_query(text):
+    value = normalize_search_entities(text)
+    if not value:
+        return False
+    if contains_any_keyword(value, MUSIC_QUERY_KEYWORDS):
+        return True
+    has_music_term = contains_any_keyword(value, GENERIC_MUSIC_TERMS)
+    if not has_music_term:
+        return False
+    if contains_any_keyword(value, MUSIC_RECOMMENDATION_HINTS):
+        return True
+    return contains_any_keyword(value, LIVE_TIME_HINTS)
+
+
+def detect_live_search_mode(text):
+    value = clean_text(text)
+    if is_news_query(value):
+        return "news"
+    if is_music_query(value):
+        return "music"
+    return "web"
+
+
+def should_consider_live_search_router(text):
+    value = clean_text(text)
+    if not value or len(value) > 160:
+        return False
+    if contains_any_keyword(value, EXPLICIT_SEARCH_HINTS):
+        return True
+    if contains_any_keyword(value, LIVE_TIME_HINTS) or contains_any_keyword(value, NEWS_QUERY_KEYWORDS) or contains_any_keyword(value, MUSIC_QUERY_KEYWORDS):
+        return True
+    lowered = value.lower()
+    if any(alias.lower() in lowered for alias in SEARCH_ENTITY_ALIASES):
+        return True
+    return contains_any_keyword(value, ("係唔係", "是不是", "仲係唔係", "仲係", "仍然", "还在", "還在", "最新", "現時", "现时"))
+
+
+def extract_search_query(text, mode="web"):
+    value = normalize_search_entities(text)
     patterns = [
+        r"^(?:蘇蘇|苏苏|bb|老婆|寶寶|宝宝)?\s*(?:你知唔知|知唔知|你知不知道|知不知道|想問下|想問|想知|想知道)?\s*",
         r"^(?:蘇蘇|苏苏|bb|老婆|寶寶|宝宝)?\s*(?:可唔可以|可不可以|可以|你可唔可以|你可以)?\s*(?:幫我|同我)?\s*(?:上網)?\s*(?:查下|查吓|查一查|搵下|搵吓|搜尋|搜索|search|lookup|google)\s*",
         r"^(?:蘇蘇|苏苏|bb|老婆|寶寶|宝宝)?\s*(?:幫我|同我)?\s*(?:睇下|睇睇)\s*",
     ]
     query = value
     for pattern in patterns:
         query = re.sub(pattern, "", query, flags=re.I)
-    if mode == "web":
+    if mode in {"web", "music"}:
         for token in (
             "而家", "依家", "宜家", "現在", "现在", "今日", "今天", "最新", "即時", "当前", "目前",
             "係唔係", "是不是", "是嗎", "係咪", "會唔會", "会不会", "有冇", "有沒有", "幾多", "多少",
@@ -715,19 +859,124 @@ def extract_search_query(text, mode="web"):
     query = re.sub(r"[?？!！]+", " ", query)
     query = re.sub(r"\s+", " ", query)
     query = query.strip("，。！？!? ")
-    return query or value
+    return dedupe_search_terms(query or value)
 
 
 def build_news_search_query(query):
-    value = clean_text(query)
-    for token in ("今日", "今天", "最新", "即時", "頭條", "headline", "news", "新聞"):
-        value = value.replace(token, " ")
+    value = strip_search_tokens(normalize_search_entities(query), (
+        "今日", "今天", "而家", "依家", "宜家", "最新", "即時", "即时", "頭條", "头条", "headline",
+        "news", "新聞", "新闻", "大新聞", "大新闻", "有咩", "有乜", "發生咩事", "发生咩事", "知唔知",
+        "呀", "啊", "呢", "喇", "嘛",
+    ))
+    value = re.sub(r"[?？!！,，。]+", " ", value)
     value = re.sub(r"\s+", " ", value).strip()
     if not value:
-        value = clean_text(query)
-    if contains_any_keyword(query, LIVE_TIME_HINTS) or contains_any_keyword(query, NEWS_QUERY_KEYWORDS):
-        return f"{value} when:1d".strip()
-    return value
+        value = "香港" if contains_any_keyword(query, HK_DEFAULT_LOCATION_HINTS) else clean_text(query)
+    if contains_any_keyword(query, HK_DEFAULT_LOCATION_HINTS) and not contains_any_keyword(value, HK_DEFAULT_LOCATION_HINTS):
+        value = f"香港 {value}"
+    if not contains_any_keyword(value, ("新聞", "新闻", "news", "headline")):
+        value = f"{value} 最新新聞".strip()
+    return dedupe_search_terms(f"{value} when:1d")
+
+
+def build_music_search_query(query):
+    normalized = normalize_search_entities(query)
+    wants_album = contains_any_keyword(normalized, ("專輯", "专辑", "album"))
+    subject = strip_search_tokens(normalized, (
+        "邊首", "边首", "哪首", "好聽", "好听", "推薦", "推荐", "覺得", "觉得", "你覺得", "你觉得",
+        "知唔知", "想問", "想知", "而家", "依家", "宜家", "今日", "今天", "呀", "啊", "呢", "喇", "嘛",
+    ) + MUSIC_QUERY_KEYWORDS + GENERIC_MUSIC_TERMS)
+    subject = re.sub(r"[?？!！,，。]+", " ", subject)
+    subject = re.sub(r"\s+", " ", subject).strip()
+    parts = []
+    if subject:
+        parts.append(subject)
+    parts.append("最新")
+    parts.append("新專輯" if wants_album else "新歌")
+    return dedupe_search_terms(" ".join(parts))
+
+
+def build_heuristic_live_search_plan(incoming_text):
+    if not should_do_live_search(incoming_text):
+        return None
+    mode = detect_live_search_mode(incoming_text)
+    query = extract_search_query(incoming_text, mode=mode)
+    if mode == "news":
+        search_query = build_news_search_query(query)
+    elif mode == "music":
+        search_query = build_music_search_query(query)
+    else:
+        search_query = dedupe_search_terms(normalize_search_entities(query))
+    return {
+        "should_search": True,
+        "mode": mode,
+        "query": search_query,
+        "confidence": 0.6,
+        "source": "heuristic",
+    }
+
+
+def route_live_search_with_model(incoming_text):
+    value = clean_text(incoming_text)
+    if not should_consider_live_search_router(value):
+        return {}
+
+    cache_key = ("live_search_router", value)
+
+    def _loader():
+        hinted_mode = detect_live_search_mode(value) if (is_news_query(value) or is_music_query(value)) else "unknown"
+        hinted_query = extract_search_query(value, mode="music" if hinted_mode == "music" else "web")
+        prompt = f"""
+用戶訊息：{value}
+目前香港時間：{hk_now().strftime('%Y-%m-%d %H:%M')}
+高概率類別：{hinted_mode}
+原句主體線索：{hinted_query}
+
+請判斷呢句需唔需要查即時外部資料；如果要，就回傳最適合搜尋嘅 mode 同 query。
+如果高概率類別已經係 news 或 music，除非非常明顯唔啱，否則應優先沿用。
+query 要保留主體人物 / 地點 / 品牌名，唔好只輸出日期或者泛詞。
+""".strip()
+        raw = generate_lightweight_router_text(prompt, system_prompt=LIVE_SEARCH_ROUTER_PROMPT)
+        data = parse_json_object(raw)
+        if not data:
+            return {}
+        should_search = bool(data.get("should_search"))
+        mode = clean_text(data.get("mode")).lower()
+        if mode not in {"news", "music", "web"}:
+            mode = "none"
+        query = dedupe_search_terms(normalize_search_entities(data.get("query") or ""))
+        try:
+            confidence = float(data.get("confidence", 0) or 0)
+        except Exception:
+            confidence = 0.0
+        return {
+            "should_search": should_search and mode in {"news", "music", "web"},
+            "mode": mode,
+            "query": query,
+            "confidence": max(0.0, min(confidence, 1.0)),
+            "source": "router",
+        }
+
+    try:
+        return cached_live_json(cache_key, _loader, ttl_seconds=LIVE_SEARCH_ROUTER_CACHE_SECONDS)
+    except Exception:
+        return {}
+
+
+def build_live_search_plan(incoming_text):
+    router_plan = route_live_search_with_model(incoming_text)
+    if router_plan.get("should_search") and router_plan.get("mode") in {"news", "music", "web"}:
+        mode = router_plan["mode"]
+        query = router_plan.get("query") or ""
+        if mode == "news":
+            query = build_news_search_query(query or extract_search_query(incoming_text, mode=mode))
+        elif mode == "music":
+            query = build_music_search_query(query or extract_search_query(incoming_text, mode=mode))
+        else:
+            query = dedupe_search_terms(normalize_search_entities(query or extract_search_query(incoming_text, mode=mode)))
+        router_plan["query"] = query
+        return router_plan
+    return build_heuristic_live_search_plan(incoming_text)
 
 
 def decode_duckduckgo_result_url(raw_url):
@@ -747,6 +996,94 @@ def result_source_label(url):
     host = (parsed.netloc or "").lower()
     host = re.sub(r"^www\.", "", host)
     return host or "web"
+
+
+def host_matches_domain(host, domain):
+    value = (host or "").lower()
+    target = (domain or "").lower()
+    return value == target or value.endswith("." + target)
+
+
+def find_domain_rank(host, domains):
+    for index, domain in enumerate(domains):
+        if host_matches_domain(host, domain):
+            return index
+    return None
+
+
+def lexical_query_overlap_score(query, haystack):
+    score = 0
+    lowered = clean_text(haystack).lower()
+    for term in dedupe_search_terms(query).lower().split():
+        if len(term) <= 1:
+            continue
+        if term in lowered:
+            score += 6
+    return score
+
+
+def score_search_result(item, mode, query, index=0):
+    url = clean_text(item.get("url"))
+    host = result_source_label(url)
+    title = clean_text(item.get("title"))
+    snippet = clean_text(item.get("snippet"))
+    haystack = " ".join(
+        clean_text(item.get(key))
+        for key in ("title", "snippet", "source", "published_at")
+    )
+    score = max(0, 30 - index)
+    score += lexical_query_overlap_score(query, haystack)
+    if mode == "news":
+        domain_rank = find_domain_rank(host, HK_NEWS_PREFERRED_DOMAINS)
+        if domain_rank is None:
+            domain_rank = find_domain_rank(host, GLOBAL_NEWS_PREFERRED_DOMAINS)
+            if domain_rank is not None:
+                score += max(6, 18 - domain_rank * 2)
+        else:
+            score += max(12, 28 - domain_rank * 3)
+        if clean_text(item.get("published_at")):
+            score += 8
+    elif mode == "music":
+        domain_rank = find_domain_rank(host, MUSIC_PREFERRED_DOMAINS)
+        if domain_rank is not None:
+            score += max(8, 16 - domain_rank * 2)
+        freshness_terms = ("最新", "新歌", "單曲", "单曲", "專輯", "专辑", "single", "album", "mv", "發行", "发行", "release", "released")
+        if contains_any_keyword(haystack, freshness_terms):
+            score += 12
+        else:
+            score -= 6
+        if contains_any_keyword(title, ("YouTube", "YouTube Music", "全部歌曲")) and not contains_any_keyword(title + " " + snippet, freshness_terms):
+            score -= 12
+    return score
+
+
+def rank_search_results(results, mode, query):
+    deduped = {}
+    for index, item in enumerate(results or []):
+        url = clean_text((item or {}).get("url"))
+        if not url:
+            continue
+        normalized_url = url.lower().rstrip("/")
+        candidate = {
+            "title": clean_text(item.get("title")),
+            "snippet": clean_text(item.get("snippet")),
+            "url": url,
+            "source": clean_text(item.get("source")),
+            "published_at": clean_text(item.get("published_at")),
+            "_score": score_search_result(item, mode, query, index=index),
+        }
+        existing = deduped.get(normalized_url)
+        if not existing or candidate["_score"] > existing["_score"]:
+            deduped[normalized_url] = candidate
+    ranked = sorted(
+        deduped.values(),
+        key=lambda item: (item["_score"], clean_text(item.get("published_at"))),
+        reverse=True,
+    )
+    return [
+        {key: value for key, value in item.items() if key != "_score"}
+        for item in ranked
+    ]
 
 
 def parse_duckduckgo_results(html_text, limit=5):
@@ -825,12 +1162,37 @@ def search_google_news(query, limit=5):
     return parse_google_news_results(xml_text, limit=limit)
 
 
+def search_music_results(query, limit=5):
+    web_results = cached_live_json(
+        ("duckduckgo_music", query),
+        lambda: search_duckduckgo_web(query, limit=max(limit * 2, 8)),
+        ttl_seconds=LIVE_LOOKUP_CACHE_SECONDS,
+    )
+    news_results = cached_live_json(
+        ("google_news_music", query),
+        lambda: search_google_news(query, limit=max(limit, 5)),
+        ttl_seconds=LIVE_LOOKUP_CACHE_SECONDS,
+    )
+    return rank_search_results((web_results or []) + (news_results or []), "music", query)[:limit]
+
+
 def trim_search_snippet(text, max_length=110):
     value = clean_text(text)
     if len(value) <= max_length:
         return value
     shortened = value[:max_length].rstrip("，。；、,:; ")
     return shortened + "…"
+
+
+def extract_named_work(text):
+    value = clean_text(text)
+    for pattern in (r"《([^》]{1,40})》", r"「([^」]{1,40})」", r"^([^-\|]{1,40})\s*-\s*[^-\|]+$"):
+        match = re.search(pattern, value)
+        if match:
+            name = clean_text(match.group(1)).strip("《》「」")
+            if name and len(name) >= 2:
+                return name
+    return ""
 
 
 def fallback_live_search_reply(query, mode, results):
@@ -848,6 +1210,20 @@ def fallback_live_search_reply(query, mode, results):
             else:
                 pieces.append(title)
         return "我幫你睇咗最新消息，而家比較近嘅有：" + "；".join(piece for piece in pieces if piece) + "。如果你想，我可以再幫你追其中一條。"
+    if mode == "music":
+        top = results[0]
+        title = clean_text(top.get("title"))
+        source = clean_text(top.get("source"))
+        snippet = clean_text(top.get("snippet"))
+        work_name = extract_named_work(snippet) or extract_named_work(title)
+        is_album = contains_any_keyword(title + " " + snippet, ("專輯", "专辑", "album"))
+        if work_name:
+            kind = "新專輯" if is_album else "新歌"
+            return f"如果你係想問最新嗰首，我啱啱上網見到而家較多結果都指向{kind}《{work_name}》。你想我再幫你由呢批最新作品入面揀邊首多人講都得。"
+        meta = f"（{source}）" if source else ""
+        if snippet:
+            return f"如果你係想問最新嗰首，我啱啱上網睇到最貼近嘅資料係 {title}{meta}；摘要提到：{trim_search_snippet(snippet)}。你想我再幫你揀下邊首多人講都得。"
+        return f"如果你係想問最新嗰首，我啱啱上網搵到而家最貼近嘅結果係 {title}{meta}。你想我再幫你睇下邊首多人講都得。"
 
     top = results[0]
     source = clean_text(top.get("source"))
@@ -861,24 +1237,34 @@ def fallback_live_search_reply(query, mode, results):
 
 
 def build_live_search_reply(incoming_text):
-    if not should_do_live_search(incoming_text):
+    plan = build_live_search_plan(incoming_text)
+    if not plan or not plan.get("should_search"):
         return None
 
-    mode = "news" if is_news_query(incoming_text) else "web"
-    query = extract_search_query(incoming_text, mode=mode)
-    search_query = build_news_search_query(query) if mode == "news" else query
+    mode = plan.get("mode") or "web"
+    search_query = clean_text(plan.get("query"))
     try:
         if mode == "news":
-            results = cached_live_json(
-                ("google_news", search_query),
-                lambda: search_google_news(search_query, limit=5),
-                ttl_seconds=LIVE_LOOKUP_CACHE_SECONDS,
+            results = rank_search_results(
+                cached_live_json(
+                    ("google_news", search_query),
+                    lambda: search_google_news(search_query, limit=8),
+                    ttl_seconds=LIVE_LOOKUP_CACHE_SECONDS,
+                ),
+                mode,
+                search_query,
             )
+        elif mode == "music":
+            results = search_music_results(search_query, limit=6)
         else:
-            results = cached_live_json(
-                ("duckduckgo_web", search_query),
-                lambda: search_duckduckgo_web(search_query, limit=5),
-                ttl_seconds=LIVE_LOOKUP_CACHE_SECONDS,
+            results = rank_search_results(
+                cached_live_json(
+                    ("duckduckgo_web", search_query),
+                    lambda: search_duckduckgo_web(search_query, limit=8),
+                    ttl_seconds=LIVE_LOOKUP_CACHE_SECONDS,
+                ),
+                mode,
+                search_query,
             )
     except Exception:
         return "我啱啱上網查資料嗰下失敗咗，未夠把握就唔想亂答，你隔一陣再問我一次好唔好？"
@@ -903,7 +1289,7 @@ def build_live_search_reply(incoming_text):
 用戶剛剛問：{clean_text(incoming_text)}
 實際搜尋關鍵字：{search_query}
 目前香港時間：{hk_now().strftime('%Y-%m-%d %H:%M')}
-搜尋模式：{"最新新聞" if mode == "news" else "網頁搜尋"}
+搜尋模式：{"最新新聞" if mode == "news" else ("音樂 / 新歌搜尋" if mode == "music" else "網頁搜尋")}
 
 搜尋結果：
 {chr(10).join(search_lines)}
@@ -911,6 +1297,7 @@ def build_live_search_reply(incoming_text):
 回覆要求：
 - 先直接答用戶最想知嘅重點
 - 只可以根據以上搜尋結果內容
+- 如果用戶問「邊首好聽」呢類主觀問題，先講客觀可驗證部分，例如最新發行或者最近多來源提到嘅歌名，再清楚講明你只係按搜尋結果推斷
 - 如果結果未夠直接回答，就講暫時見到嘅結果未夠準
 - 用繁體港式廣東話，似自然 WhatsApp
 - 可以好短，但要完整
@@ -2173,6 +2560,23 @@ def parse_json_array(raw_text):
     return data if isinstance(data, list) else []
 
 
+def parse_json_object(raw_text):
+    text = (raw_text or "").strip()
+    if not text:
+        return {}
+    text = re.sub(r"^```(?:json)?", "", text).strip()
+    text = re.sub(r"```$", "", text).strip()
+    start = text.find("{")
+    end = text.rfind("}")
+    if start == -1 or end == -1 or end <= start:
+        return {}
+    try:
+        data = json.loads(text[start : end + 1])
+    except json.JSONDecodeError:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
 def heuristic_extract_memories(incoming_text):
     text = clean_text(incoming_text)
     extra = []
@@ -2334,7 +2738,7 @@ def call_groq(prompt_text, temperature=0.82, max_tokens=220, system_prompt=None,
 
 def generate_model_text(prompt_text, temperature=0.82, max_tokens=220, system_prompt=None, image_inputs=None):
     errors = []
-    relay_primary, relay_secondary = get_relay_model_order()
+    relay_primary, _ = get_relay_model_order()
 
     if RELAY_API_KEY and relay_primary:
         try:
@@ -2346,45 +2750,24 @@ def generate_model_text(prompt_text, temperature=0.82, max_tokens=220, system_pr
         except Exception as exc:
             errors.append(f"relay_failed:{type(exc).__name__}")
 
-    if RELAY_API_KEY and relay_secondary:
+    if errors:
+        raise RuntimeError(";".join(errors))
+    return ""
+
+
+def generate_lightweight_router_text(prompt_text, system_prompt=None):
+    errors = []
+    relay_primary, _ = get_relay_model_order()
+
+    if RELAY_API_KEY and relay_primary:
         try:
-            return call_relay_model(relay_secondary, prompt_text, temperature=temperature, max_tokens=max_tokens, system_prompt=system_prompt, image_inputs=image_inputs)
+            return call_relay_model(relay_primary, prompt_text, temperature=0.0, max_tokens=160, system_prompt=system_prompt)
         except HTTPError as exc:
-            errors.append(f"relay_fallback_http_{exc.code}")
+            errors.append(f"router_relay_http_{exc.code}")
             if exc.code not in (401, 403, 429, 500, 502, 503, 504):
                 raise
         except Exception as exc:
-            errors.append(f"relay_fallback_failed:{type(exc).__name__}")
-
-    if GEMINI_API_KEY:
-        try:
-            return call_gemini(prompt_text, temperature=temperature, max_tokens=max_tokens, system_prompt=system_prompt, image_inputs=image_inputs)
-        except HTTPError as exc:
-            errors.append(f"gemini_http_{exc.code}")
-            if exc.code not in (429, 500, 502, 503, 504):
-                raise
-        except Exception as exc:
-            errors.append(f"gemini_failed:{type(exc).__name__}")
-
-    if MINIMAX_API_KEY:
-        try:
-            return call_minimax(prompt_text, temperature=temperature, max_tokens=max_tokens, system_prompt=system_prompt, image_inputs=image_inputs)
-        except HTTPError as exc:
-            errors.append(f"minimax_http_{exc.code}")
-            if exc.code not in (401, 403, 429, 500, 502, 503, 504):
-                raise
-        except Exception as exc:
-            errors.append(f"minimax_failed:{type(exc).__name__}")
-
-    if GROQ_API_KEY:
-        try:
-            return call_groq(prompt_text, temperature=temperature, max_tokens=max_tokens, system_prompt=system_prompt, image_inputs=image_inputs)
-        except HTTPError as exc:
-            errors.append(f"groq_http_{exc.code}")
-            if exc.code not in (401, 403, 429, 500, 502, 503, 504):
-                raise
-        except Exception as exc:
-            errors.append(f"groq_failed:{type(exc).__name__}")
+            errors.append(f"router_relay_failed:{type(exc).__name__}")
 
     if errors:
         raise RuntimeError(";".join(errors))
@@ -3928,16 +4311,7 @@ class Handler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         if parsed.path == "/health":
             settings = get_runtime_settings()
-            relay_primary, relay_secondary = get_relay_model_order()
-            fallback_model = ""
-            if RELAY_API_KEY and relay_secondary:
-                fallback_model = relay_secondary
-            elif GEMINI_API_KEY:
-                fallback_model = settings["gemini_model"]
-            elif MINIMAX_API_KEY:
-                fallback_model = MINIMAX_MODEL
-            elif GROQ_API_KEY:
-                fallback_model = GROQ_MODEL
+            relay_primary, _ = get_relay_model_order()
 
             self._send_json(
                 {
@@ -3946,8 +4320,8 @@ class Handler(BaseHTTPRequestHandler):
                     "time_mode": "night" if is_night_mode() else "day",
                     "time_profile": get_time_profile(),
                     "timezone": "Asia/Hong_Kong",
-                    "primary_model": relay_primary if RELAY_API_KEY else (settings["gemini_model"] if GEMINI_API_KEY else (MINIMAX_MODEL if MINIMAX_API_KEY else GROQ_MODEL)),
-                    "fallback_model": fallback_model,
+                    "primary_model": relay_primary if RELAY_API_KEY else "",
+                    "fallback_model": "",
                     "has_relay_key": bool(RELAY_API_KEY),
                     "has_gemini_key": bool(GEMINI_API_KEY),
                     "has_minimax_key": bool(MINIMAX_API_KEY),

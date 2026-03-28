@@ -1247,9 +1247,6 @@ SUSU_SETTINGS_TABLE = "wa_susu_settings"
 SUSU_SETTING_SPECS = {
     "system_persona": {"type": "multiline", "max_length": 12000, "default": "", "required": True},
     "primary_user_memory": {"type": "multiline", "max_length": 12000, "default": "", "required": True},
-    "relay_model": {"type": "text", "max_length": 120, "default": os.environ.get("WA_RELAY_MODEL", "claude-opus-4-6"), "required": True},
-    "relay_fallback_model": {"type": "text", "max_length": 120, "default": os.environ.get("WA_RELAY_FALLBACK_MODEL", "claude-sonnet-4-6"), "required": False},
-    "gemini_model": {"type": "text", "max_length": 120, "default": os.environ.get("WA_GEMINI_MODEL", "gemini-2.5-flash"), "required": True},
     "proactive_enabled": {"type": "bool", "default": True},
     "proactive_scan_seconds": {"type": "int", "default": int(os.environ.get("WA_PROACTIVE_SCAN_SECONDS", "300")), "min": 60, "max": 3600},
     "proactive_min_silence_minutes": {"type": "int", "default": int(os.environ.get("WA_PROACTIVE_MIN_SILENCE_MINUTES", "45")), "min": 5, "max": 1440},
