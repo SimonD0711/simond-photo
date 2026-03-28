@@ -1,12 +1,12 @@
 # Susu Cloud Local Handoff
 
-Last updated: 2026-03-28 20:10 HKT
+Last updated: 2026-03-28 20:13 HKT
 
 ## Workspace
 
 - Main workspace: `C:\Users\ding7\Documents\gpt-susu-cloud`
 - Current branch: `codex/susu-cloud`
-- Current local HEAD: `71b648e` (`Keep WhatsApp typing indicator alive`)
+- Current local HEAD: check `git log --oneline -1` in this workspace
 - Local git status when this note was updated: clean
 
 ## Authority And Deployment
@@ -23,7 +23,7 @@ Last updated: 2026-03-28 20:10 HKT
 
 ## Production Status
 
-Checked on 2026-03-28 20:10 HKT:
+Checked on 2026-03-28 20:13 HKT:
 
 - `wa-agent.service` = `active`
 - `cheungchau-api.service` = `active`
@@ -115,14 +115,29 @@ Current safety posture:
 
 ## Recent Tokyo Backups
 
-Most recent remote backups seen on 2026-03-28 20:10 HKT:
+Remote backup retention was cleaned on 2026-03-28 20:13 HKT.
+
+Current kept backups:
 
 - `/var/www/html/wa_agent.py.bak.20260328195958`
 - `/var/www/html/wa_agent.py.bak.20260328194113`
 - `/var/www/html/wa_agent.py.bak.20260328193731`
-- `/var/www/html/wa_agent.py.bak.20260328191854`
-- `/var/www/html/wa_agent.py.bak.20260328191454`
-- `/var/www/html/wa_agent.py.bak.20260328191046`
+- `/var/www/html/api_server.py.bak.20260328182723`
+- `/var/www/html/api_server.py.bak.20260328135757`
+- `/var/www/html/api_server.py.bak.20260328134352`
+- `/var/www/html/susu-memory-admin.html.bak.20260328182723`
+- `/var/www/html/susu-memory-admin.html.bak.20260328143617`
+- `/var/www/html/susu-memory-admin.html.bak.20260328140309`
+- `/var/www/html/wa_agent.db.bak.20260328142143`
+
+Retention rule currently applied:
+
+- keep latest `3` backups for:
+  - `wa_agent.py`
+  - `api_server.py`
+  - `susu-memory-admin.html`
+- keep latest `1` backup for:
+  - `wa_agent.db`
 
 ## Key Files
 
