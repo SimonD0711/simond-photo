@@ -34,7 +34,7 @@ VERIFY_TOKEN = os.environ.get("WA_VERIFY_TOKEN", "")
 ACCESS_TOKEN = os.environ.get("WA_ACCESS_TOKEN", "")
 PHONE_NUMBER_ID = os.environ.get("WA_PHONE_NUMBER_ID", "")
 GRAPH_VERSION = os.environ.get("WA_GRAPH_VERSION", "v22.0")
-INBOUND_GRACE_SECONDS = float(os.environ.get("WA_INBOUND_GRACE_SECONDS", "7"))
+TYPING_INDICATOR_DELAY_SECONDS = float(os.environ.get("WA_TYPING_INDICATOR_DELAY_SECONDS", "0.5"))
 PROACTIVE_ENABLED = os.environ.get("WA_PROACTIVE_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"}
 PROACTIVE_SCAN_SECONDS = int(os.environ.get("WA_PROACTIVE_SCAN_SECONDS", "300"))
 PROACTIVE_MIN_SILENCE_MINUTES = int(os.environ.get("WA_PROACTIVE_MIN_SILENCE_MINUTES", "45"))
@@ -1220,6 +1220,42 @@ def send_whatsapp_text(to_number, body):
         return json.loads(raw) if raw else {"ok": True}
 
 
+def send_whatsapp_status_update(message_id, typing=False):
+    if not ACCESS_TOKEN or not PHONE_NUMBER_ID:
+        return {"ok": False, "detail": "Missing WhatsApp credentials"}
+    if not message_id:
+        return {"ok": False, "detail": "Missing message_id"}
+
+    payload = {
+        "messaging_product": "whatsapp",
+        "status": "read",
+        "message_id": message_id,
+    }
+    if typing:
+        payload["typing_indicator"] = {"type": "text"}
+
+    request = Request(
+        f"https://graph.facebook.com/{GRAPH_VERSION}/{PHONE_NUMBER_ID}/messages",
+        data=json.dumps(payload).encode("utf-8"),
+        headers={
+            "Authorization": f"Bearer {ACCESS_TOKEN}",
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+    with urlopen(request, timeout=15) as response:
+        raw = response.read().decode("utf-8")
+        return json.loads(raw) if raw else {"ok": True}
+
+
+def send_whatsapp_mark_as_read(message_id):
+    return send_whatsapp_status_update(message_id, typing=False)
+
+
+def send_whatsapp_typing_indicator(message_id):
+    return send_whatsapp_status_update(message_id, typing=True)
+
+
 def graph_get_json(path):
     request = Request(
         f"https://graph.facebook.com/{GRAPH_VERSION}/{path.lstrip('/')}",
@@ -1927,6 +1963,25 @@ def get_latest_inbound_id(conn, wa_id):
         (wa_id,),
     ).fetchone()
     return int(row["id"]) if row else 0
+
+
+def get_latest_inbound_id_for_wa(wa_id):
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    try:
+        row = conn.execute(
+            """
+            SELECT id
+            FROM wa_messages
+            WHERE wa_id = ? AND direction = 'inbound'
+            ORDER BY id DESC
+            LIMIT 1
+            """,
+            (wa_id,),
+        ).fetchone()
+        return int(row["id"]) if row else 0
+    finally:
+        conn.close()
 
 
 def load_pending_inbound_batch(conn, wa_id, current_inbound_id):
@@ -3504,12 +3559,42 @@ def process_pending_replies_for_contact(wa_id):
             batch_last_id = pending_rows[-1]["id"]
             batch_last_message_id = clean_text(pending_rows[-1].get("message_id"))
             last_body = clean_text(pending_rows[-1]["body"]) if pending_rows else (combined_text or "").strip()
+            typing_stop = None
+
+            if batch_last_message_id:
+                try:
+                    send_whatsapp_mark_as_read(batch_last_message_id)
+                except Exception:
+                    pass
+
+                typing_stop = threading.Event()
+
+                def _maybe_send_typing(expected_version, expected_batch_id, expected_message_id):
+                    if typing_stop.wait(TYPING_INDICATOR_DELAY_SECONDS):
+                        return
+                    latest_version, _, _ = get_reply_worker_snapshot(wa_id)
+                    if latest_version != expected_version:
+                        return
+                    if get_latest_inbound_id_for_wa(wa_id) != expected_batch_id:
+                        return
+                    try:
+                        send_whatsapp_typing_indicator(expected_message_id)
+                    except Exception:
+                        pass
+
+                threading.Thread(
+                    target=_maybe_send_typing,
+                    args=(target_version, batch_last_id, batch_last_message_id),
+                    daemon=True,
+                ).start()
 
             reply_text = None
             skip_generate = False
             if wa_id == CLAUDE_WA_ID and not image_inputs:
                 latest_version, _, _ = get_reply_worker_snapshot(wa_id)
                 if latest_version != target_version or get_latest_inbound_id(conn, wa_id) != batch_last_id:
+                    if typing_stop:
+                        typing_stop.set()
                     continue
                 run_claude_code_streaming(last_body, wa_id)
                 skip_generate = True
@@ -3526,6 +3611,9 @@ def process_pending_replies_for_contact(wa_id):
                 except Exception as exc:
                     reply_text = "我啱啱個腦有啲卡住咗，等我緩一緩先再同你傾，好唔好？"
                     log_outbound_error(conn, wa_id, "model_failed", exc)
+
+            if typing_stop:
+                typing_stop.set()
 
             latest_version, latest_profile_name, _ = get_reply_worker_snapshot(wa_id)
             if latest_profile_name:
