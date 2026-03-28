@@ -483,15 +483,11 @@
   <div class="modal" id="edit-modal">
     <div class="modal-card">
       <h2 id="edit-modal-title">編輯長期記憶</h2>
-      <p id="edit-modal-desc">直接修改 <code>wa_memories</code> 的內容，儲存後即時生效。</p>
+      <p id="edit-modal-desc">直接修改這條長期記憶的內容，儲存後即時生效。</p>
       <input type="hidden" id="edit-id">
       <div class="modal-field">
         <label>號主</label>
         <input type="text" id="edit-wa" readonly>
-      </div>
-      <div class="modal-field">
-        <label>類型</label>
-        <input type="text" id="edit-kind">
       </div>
       <div class="modal-field">
         <label>內容</label>
@@ -549,15 +545,7 @@
   <div class="modal" id="new-modal">
     <div class="modal-card">
       <h2>新增長期記憶</h2>
-      <p>為號主新增一條可長期保留的記憶。</p>
-      <div class="modal-field">
-        <label>類型</label>
-        <select id="new-kind">
-          <option value="manual">manual</option>
-          <option value="note">note</option>
-          <option value="auto">auto</option>
-        </select>
-      </div>
+      <p>為號主新增一條手動長期記憶，會以 <code>manual</code> 類型保存。</p>
       <div class="modal-field">
         <label>內容</label>
         <textarea id="new-content" spellcheck="false" placeholder="例如：Simon近期要完成 progress report"></textarea>
@@ -983,7 +971,7 @@
         method: 'POST',
         body: JSON.stringify({ settings: collectSettingsForm() }),
       });
-      await loadMemory(contactSelect.value);
+      await loadMemory();
       statusNote.textContent = `苏苏設定已儲存，約 5 秒內生效 · ${fmt(new Date().toISOString())}`;
     } catch (e) {
       if (err) err.textContent = e.message;
@@ -1020,7 +1008,6 @@
   const editModal = document.getElementById('edit-modal');
   const editId = document.getElementById('edit-id');
   const editWa = document.getElementById('edit-wa');
-  const editKind = document.getElementById('edit-kind');
   const editContent = document.getElementById('edit-content');
   const editErr = document.getElementById('edit-err');
 
@@ -1029,7 +1016,6 @@
     if (!entry) return;
     editId.value = entry.id;
     editWa.value = entry.wa_id;
-    editKind.value = entry.kind || 'manual';
     editContent.value = entry.content || '';
     editErr.textContent = '';
     editModal.classList.add('is-open');
@@ -1042,10 +1028,10 @@
     try {
       await apiFetch('/api/admin/susu-memory/update', {
         method: 'POST',
-        body: JSON.stringify({ id: Number(editId.value), kind: editKind.value.trim(), content: editContent.value }),
+        body: JSON.stringify({ id: Number(editId.value), content: editContent.value }),
       });
       editModal.classList.remove('is-open');
-      await loadMemory(contactSelect.value);
+      await loadMemory();
     } catch (e) {
       editErr.textContent = e.message;
     }
@@ -1074,7 +1060,7 @@
         body: JSON.stringify({ id: Number(deleteId.value), type: deleteType.value }),
       });
       deleteModal.classList.remove('is-open');
-      await loadMemory(contactSelect.value);
+      await loadMemory();
     } catch (e) {
       deleteErr.textContent = e.message;
     }
@@ -1117,19 +1103,17 @@
         }),
       });
       reminderModal.classList.remove('is-open');
-      await loadMemory(contactSelect.value);
+      await loadMemory();
     } catch (e) {
       reminderErr.textContent = e.message;
     }
   });
 
   const newModal = document.getElementById('new-modal');
-  const newKind = document.getElementById('new-kind');
   const newContent = document.getElementById('new-content');
   const newErr = document.getElementById('new-err');
 
   document.getElementById('new-btn').addEventListener('click', () => {
-    newKind.value = 'manual';
     newContent.value = '';
     newErr.textContent = '';
     newModal.classList.add('is-open');
@@ -1139,14 +1123,14 @@
   document.getElementById('new-cancel').addEventListener('click', () => newModal.classList.remove('is-open'));
   document.getElementById('new-save').addEventListener('click', async () => {
     newErr.textContent = '';
-    if (!newKind.value.trim() || !newContent.value.trim()) {
-      newErr.textContent = '請填寫類型與內容';
+    if (!newContent.value.trim()) {
+      newErr.textContent = '請填寫內容';
       return;
     }
     try {
       await apiFetch('/api/admin/susu-memory/create', {
         method: 'POST',
-        body: JSON.stringify({ kind: newKind.value.trim(), content: newContent.value }),
+        body: JSON.stringify({ content: newContent.value }),
       });
       newModal.classList.remove('is-open');
       await loadMemory();
