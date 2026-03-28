@@ -119,9 +119,17 @@ MUSIC_QUERY_KEYWORDS = (
     "新歌", "最新歌", "新出的歌", "最近嘅歌", "最近的歌", "新專輯", "新专辑",
     "最新專輯", "最新专辑", "新單曲", "新单曲",
 )
+RANKING_QUERY_KEYWORDS = (
+    "排行榜", "排行", "排名", "榜單", "榜单", "榜", "top 10", "top10", "前十", "前 10", "十首", "週榜", "周榜", "月榜",
+)
 MUSIC_RECOMMENDATION_HINTS = (
     "邊首", "边首", "哪首", "咩歌", "乜歌", "好聽", "好听", "推薦", "推荐",
 )
+LIVE_SEARCH_FOLLOWUP_HINTS = (
+    "快啲幫我查", "快点帮我查", "再幫我查", "再帮我查", "繼續查", "继续查", "查啦", "快啲查",
+    "快点查", "幫我查啦", "帮我查啦", "快啲幫我睇", "快点帮我看", "再睇下", "再看下",
+)
+COUNT_QUERY_HINTS = ("幾首", "几首", "幾多首", "几多首", "多少首")
 SEARCH_ENTITY_ALIASES = {
     "周董": "周杰倫",
     "杰倫": "周杰倫",
@@ -160,6 +168,13 @@ MUSIC_PREFERRED_DOMAINS = (
     "kkbox.com",
     "genius.com",
     "wikipedia.org",
+)
+CHART_PREFERRED_DOMAINS = (
+    "kma.kkbox.com",
+    "kkbox.com",
+    "billboard.com",
+    "music.apple.com",
+    "spotify.com",
 )
 LIVE_SEARCH_SUMMARIZER_PROMPT = textwrap.dedent(
     """
@@ -202,6 +217,23 @@ LIVE_SEARCH_ROUTER_PROMPT = textwrap.dedent(
 
     用戶：你掛唔掛住我
     {"should_search": false, "mode": "none", "query": "", "confidence": 0.98}
+    """
+).strip()
+LIVE_SEARCH_REVIEW_PROMPT = textwrap.dedent(
+    """
+    你係一個即時搜尋審稿器，任務係判斷「目前搜尋結果夠唔夠支持回答」。
+    你只可以根據用戶問題、搜尋 query 同搜尋結果做判斷，唔好自己補資料。
+
+    請只輸出 JSON object：
+    {"decision":"answer|refine|abstain","refined_query":"","reason":"一句短理由","confidence":0.0}
+
+    規則：
+    - answer：當前結果已經足夠直接回答，而且唔需要估。
+    - refine：問題應該查得到，但當前 query 太闊、太偏、太泛，建議改一條更準嘅 query 再查一次。
+    - abstain：結果仍然唔夠穩陣、互相矛盾、或者缺少關鍵證據，唔應該硬答。
+    - 排行榜、前十、幾多首、名單、比較呢類問題，如果冇完整可靠證據，唔好答死，應該 refine 或 abstain。
+    - refined_query 要保留人名、地點、品牌名、榜單名等關鍵主體。
+    - reason 要短，純描述問題，例如「結果太泛，未直接對應榜單」。
     """
 ).strip()
 
@@ -808,9 +840,18 @@ def is_music_query(text):
     has_music_term = contains_any_keyword(value, GENERIC_MUSIC_TERMS)
     if not has_music_term:
         return False
+    if is_ranking_query(value):
+        return True
     if contains_any_keyword(value, MUSIC_RECOMMENDATION_HINTS):
         return True
     return contains_any_keyword(value, LIVE_TIME_HINTS)
+
+
+def is_ranking_query(text):
+    value = normalize_search_entities(text)
+    if not value:
+        return False
+    return contains_any_keyword(value, RANKING_QUERY_KEYWORDS)
 
 
 def detect_live_search_mode(text):
@@ -832,7 +873,7 @@ def should_consider_live_search_router(text):
         return True
     if contains_any_keyword(value, EXPLICIT_SEARCH_HINTS):
         return True
-    if contains_any_keyword(value, LIVE_TIME_HINTS) or contains_any_keyword(value, NEWS_QUERY_KEYWORDS) or contains_any_keyword(value, MUSIC_QUERY_KEYWORDS):
+    if contains_any_keyword(value, LIVE_TIME_HINTS) or contains_any_keyword(value, NEWS_QUERY_KEYWORDS) or contains_any_keyword(value, MUSIC_QUERY_KEYWORDS) or contains_any_keyword(value, RANKING_QUERY_KEYWORDS):
         return True
     lowered = value.lower()
     if any(alias.lower() in lowered for alias in SEARCH_ENTITY_ALIASES):
@@ -840,12 +881,63 @@ def should_consider_live_search_router(text):
     return contains_any_keyword(value, ("係唔係", "是不是", "仲係唔係", "仲係", "仍然", "还在", "還在", "最新", "現時", "现时"))
 
 
+def looks_like_live_search_followup(text):
+    value = clean_text(text)
+    if not value or len(value) > 80:
+        return False
+    if not contains_any_keyword(value, LIVE_SEARCH_FOLLOWUP_HINTS):
+        return False
+    if is_weather_query(value) or is_news_query(value) or is_music_query(value):
+        return False
+    lowered = value.lower()
+    return not any(alias.lower() in lowered for alias in SEARCH_ENTITY_ALIASES)
+
+
+def has_live_search_topic_clues(text):
+    value = clean_text(text)
+    if not value:
+        return False
+    if is_weather_query(value) or is_news_query(value) or is_music_query(value) or is_ranking_query(value):
+        return True
+    if contains_any_keyword(value, EXPLICIT_SEARCH_HINTS):
+        return True
+    lowered = value.lower()
+    return any(alias.lower() in lowered for alias in SEARCH_ENTITY_ALIASES)
+
+
+def expand_live_search_followup_text(conn, wa_id, incoming_text, history_limit=8):
+    value = clean_text(incoming_text)
+    if not conn or not wa_id or not looks_like_live_search_followup(value):
+        return value
+
+    rows = conn.execute(
+        """
+        SELECT body
+        FROM wa_messages
+        WHERE wa_id = ?
+          AND direction = 'inbound'
+        ORDER BY id DESC
+        LIMIT ?
+        """,
+        (wa_id, max(2, int(history_limit))),
+    ).fetchall()
+    for row in rows:
+        candidate = clean_text(row["body"])
+        if not candidate or candidate == value:
+            continue
+        if looks_like_live_search_followup(candidate):
+            continue
+        if has_live_search_topic_clues(candidate):
+            return f"{candidate}\n{value}"
+    return value
+
+
 def extract_search_query(text, mode="web"):
     value = normalize_search_entities(text)
     patterns = [
         r"^(?:蘇蘇|苏苏|bb|老婆|寶寶|宝宝)?\s*(?:你知唔知|知唔知|你知不知道|知不知道|想問下|想問|想知|想知道)?\s*",
         r"^(?:蘇蘇|苏苏|bb|老婆|寶寶|宝宝)?\s*(?:可唔可以|可不可以|可以|你可唔可以|你可以)?\s*(?:幫我|同我)?\s*(?:上網)?\s*(?:查下|查吓|查一查|搵下|搵吓|搜尋|搜索|search|lookup|google)\s*",
-        r"^(?:蘇蘇|苏苏|bb|老婆|寶寶|宝宝)?\s*(?:幫我|同我)?\s*(?:睇下|睇睇)\s*",
+        r"^(?:蘇蘇|苏苏|bb|老婆|寶寶|宝宝)?\s*(?:你)?(?:幫我|帮我|同我)?\s*(?:睇下|睇睇|看一下|看一看|看看|看下)\s*",
     ]
     query = value
     for pattern in patterns:
@@ -886,9 +978,21 @@ def build_music_search_query(query):
     subject = strip_search_tokens(normalized, (
         "邊首", "边首", "哪首", "好聽", "好听", "推薦", "推荐", "覺得", "觉得", "你覺得", "你觉得",
         "知唔知", "想問", "想知", "而家", "依家", "宜家", "今日", "今天", "呀", "啊", "呢", "喇", "嘛",
-    ) + MUSIC_QUERY_KEYWORDS + GENERIC_MUSIC_TERMS)
+        "都係", "都是", "都系", "有咩", "有乜", "幫我", "帮我", "你幫我", "你帮我", "睇下", "睇睇", "看一下", "看一看", "看看", "看下",
+    ) + MUSIC_QUERY_KEYWORDS + GENERIC_MUSIC_TERMS + RANKING_QUERY_KEYWORDS)
     subject = re.sub(r"[?？!！,，。]+", " ", subject)
+    subject = re.sub(r"(?:有)?[幾几]\s*首", " ", subject)
+    subject = re.sub(r"(?:喺|在)\s*榜上", " ", subject)
+    subject = re.sub(r"(?:喺|在)\s*上", " ", subject)
     subject = re.sub(r"\s+", " ", subject).strip()
+    if is_ranking_query(normalized):
+        parts = ["KKBOX"]
+        if subject:
+            parts.append(subject)
+        if not contains_any_keyword(" ".join(parts), ("華語", "华语", "粵語", "粤语", "mandopop", "cantopop", "c-pop")):
+            parts.append("華語")
+        parts.extend(["單曲", "週榜", "最新"])
+        return dedupe_search_terms(" ".join(parts))
     parts = []
     if subject:
         parts.append(subject)
@@ -1059,6 +1163,17 @@ def score_search_result(item, mode, query, index=0):
             score -= 6
         if contains_any_keyword(title, ("YouTube", "YouTube Music", "全部歌曲")) and not contains_any_keyword(title + " " + snippet, freshness_terms):
             score -= 12
+    elif mode == "music_chart":
+        domain_rank = find_domain_rank(host, CHART_PREFERRED_DOMAINS)
+        if domain_rank is not None:
+            score += max(18, 32 - domain_rank * 3)
+        chart_terms = ("排行榜", "排行", "榜單", "榜单", "週榜", "周榜", "月榜", "top 10", "top10", "前十", "單曲榜", "单曲榜")
+        if contains_any_keyword(haystack, chart_terms):
+            score += 18
+        else:
+            score -= 10
+        if contains_any_keyword(title + " " + snippet, ("YouTube", "YouTube Music", "playlist", "歌單", "歌单")) and not contains_any_keyword(haystack, chart_terms):
+            score -= 18
     return score
 
 
@@ -1167,7 +1282,7 @@ def search_google_news(query, limit=5):
     return parse_google_news_results(xml_text, limit=limit)
 
 
-def search_music_results(query, limit=5):
+def search_music_results(query, limit=5, ranking_query=False):
     web_results = cached_live_json(
         ("duckduckgo_music", query),
         lambda: search_duckduckgo_web(query, limit=max(limit * 2, 8)),
@@ -1178,7 +1293,210 @@ def search_music_results(query, limit=5):
         lambda: search_google_news(query, limit=max(limit, 5)),
         ttl_seconds=LIVE_LOOKUP_CACHE_SECONDS,
     )
-    return rank_search_results((web_results or []) + (news_results or []), "music", query)[:limit]
+    mode = "music_chart" if ranking_query else "music"
+    return rank_search_results((web_results or []) + (news_results or []), mode, query)[:limit]
+
+
+def extract_quoted_titles(text, max_titles=8):
+    value = clean_text(text)
+    if not value:
+        return []
+    titles = []
+    seen = set()
+    for match in re.finditer(r"[《〈「『]([^《》〈〉「」『』]{1,40})[》〉」』]", value):
+        title = clean_text(match.group(1)).strip("《》〈〉「」『』")
+        key = normalize_key(title)
+        if not title or len(title) < 2 or key in seen:
+            continue
+        seen.add(key)
+        titles.append(title)
+        if len(titles) >= max_titles:
+            break
+    return titles
+
+
+def collect_chart_source_labels(results, limit=2):
+    labels = []
+    seen = set()
+    for item in results or []:
+        host = result_source_label(clean_text(item.get("url")))
+        if find_domain_rank(host, CHART_PREFERRED_DOMAINS) is None:
+            continue
+        label = clean_text(item.get("source")) or host
+        key = normalize_key(label)
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        labels.append(label)
+        if len(labels) >= limit:
+            break
+    return labels
+
+
+def collect_music_title_candidates(results, max_titles=10):
+    titles = []
+    seen = set()
+    for item in results or []:
+        for raw_text in (item.get("title"), item.get("snippet")):
+            for title in extract_quoted_titles(raw_text, max_titles=max_titles):
+                key = normalize_key(title)
+                if key in seen:
+                    continue
+                seen.add(key)
+                titles.append(title)
+                if len(titles) >= max_titles:
+                    return titles
+    return titles
+
+
+def build_music_chart_guard_reply(incoming_text, results):
+    if not is_ranking_query(incoming_text):
+        return None
+    chart_results = [
+        item for item in (results or [])
+        if find_domain_rank(result_source_label(clean_text(item.get("url"))), CHART_PREFERRED_DOMAINS) is not None
+    ]
+    titles = collect_music_title_candidates(chart_results or results, max_titles=10)
+    source_labels = collect_chart_source_labels(chart_results)
+    source_text = " / ".join(source_labels)
+    wants_count = contains_any_keyword(incoming_text, COUNT_QUERY_HINTS)
+
+    if chart_results and len(titles) >= 8:
+        joined_titles = "、".join(f"《{title}》" for title in titles[:10])
+        prefix = f"bb 我喺 {source_text} 呢啲榜單結果入面" if source_text else "bb 我喺而家搵到嘅榜單結果入面"
+        return f"{prefix}明確見到排前面嘅歌有 {joined_titles}。"
+
+    if source_text:
+        if wants_count:
+            return f"bb 我而家只搵到 {source_text} 相關結果，但未見到完整可靠嘅榜單內容，所以唔敢當真幫你數住。"
+        return f"bb 我而家只搵到 {source_text} 相關結果，但未見到完整可靠嘅榜單內容，所以唔敢亂報歌名住。"
+    if wants_count:
+        return "bb 我而家未搵到一個完整可靠嘅榜單頁，所以唔敢當真幫你數住，免得同你作咗出嚟。"
+    return "bb 我而家未搵到一個完整可靠嘅排行榜頁，所以唔敢亂報歌名住，免得同你作咗出嚟。"
+
+
+def build_search_review_lines(results, limit=4):
+    lines = []
+    for index, item in enumerate(results[:limit], start=1):
+        bits = [f"{index}. {clean_text(item.get('title'))}"]
+        if clean_text(item.get("source")):
+            bits.append(f"來源={clean_text(item.get('source'))}")
+        if clean_text(item.get("published_at")):
+            bits.append(f"時間={clean_text(item.get('published_at'))}")
+        if clean_text(item.get("snippet")):
+            bits.append(f"摘要={clean_text(item.get('snippet'))}")
+        if clean_text(item.get("url")):
+            bits.append(f"連結={clean_text(item.get('url'))}")
+        lines.append(" | ".join(bit for bit in bits if bit))
+    return lines
+
+
+def review_live_search_results(incoming_text, effective_text, mode, search_query, results):
+    if mode == "weather":
+        return {"decision": "answer", "refined_query": "", "reason": "", "confidence": 0.99}
+    review_lines = build_search_review_lines(results)
+    if not review_lines:
+        return {"decision": "abstain", "refined_query": "", "reason": "未搵到結果", "confidence": 0.98}
+
+    prompt = f"""
+用戶原問題：{clean_text(incoming_text)}
+補充上下文：{clean_text(effective_text)}
+搜尋模式：{mode}
+目前 query：{clean_text(search_query)}
+目前香港時間：{hk_now().strftime('%Y-%m-%d %H:%M')}
+
+搜尋結果：
+{chr(10).join(review_lines)}
+""".strip()
+    try:
+        raw = generate_lightweight_router_text(prompt, system_prompt=LIVE_SEARCH_REVIEW_PROMPT)
+        data = parse_json_object(raw)
+    except Exception:
+        data = {}
+
+    decision = clean_text((data or {}).get("decision")).lower()
+    if decision not in {"answer", "refine", "abstain"}:
+        decision = "answer"
+    refined_query = dedupe_search_terms(normalize_search_entities((data or {}).get("refined_query") or ""))
+    reason = clean_text((data or {}).get("reason"))
+    try:
+        confidence = float((data or {}).get("confidence", 0) or 0)
+    except Exception:
+        confidence = 0.0
+    return {
+        "decision": decision,
+        "refined_query": refined_query,
+        "reason": reason,
+        "confidence": max(0.0, min(confidence, 1.0)),
+    }
+
+
+def build_live_search_abstain_reply(mode, results, review_reason=""):
+    source_labels = []
+    seen = set()
+    for item in results or []:
+        label = clean_text(item.get("source")) or result_source_label(clean_text(item.get("url")))
+        key = normalize_key(label)
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        source_labels.append(label)
+        if len(source_labels) >= 2:
+            break
+    source_text = " / ".join(source_labels)
+    reason_text = clean_text(review_reason)
+    if mode == "news":
+        if source_text:
+            return f"bb 我而家只搵到 {source_text} 呢批結果，但仲未夠我穩陣咁講死住。"
+        return "bb 我而家搵到嘅新聞結果仲未夠穩陣，所以唔想同你講死住。"
+    if mode == "music":
+        if source_text:
+            return f"bb 我而家只搵到 {source_text} 呢批結果，但仲未夠直接，所以唔想亂答你。"
+        return "bb 我而家搵到嘅音樂結果仲未夠直接，所以唔想亂答你。"
+    if source_text:
+        if reason_text:
+            return f"bb 我而家只搵到 {source_text} 呢批結果，但 {reason_text}，所以唔想亂答住。"
+        return f"bb 我而家只搵到 {source_text} 呢批結果，但仲未夠直接，所以唔想亂答住。"
+    if reason_text:
+        return f"bb 我而家搵到嘅結果仲未夠穩陣，{reason_text}，所以唔想亂答住。"
+    return "bb 我而家搵到嘅結果仲未夠穩陣，所以唔想亂答住。"
+
+
+def fetch_live_search_results(mode, search_query, effective_text):
+    if mode == "weather":
+        weather_summary = build_live_weather_reply(effective_text)
+        if not weather_summary:
+            return []
+        return [
+            {
+                "title": "香港天文台官方資料",
+                "source": "香港天文台",
+                "published_at": hk_now().strftime("%Y-%m-%d %H:%M"),
+                "snippet": weather_summary,
+                "url": "https://www.hko.gov.hk/",
+            }
+        ]
+    if mode == "news":
+        return rank_search_results(
+            cached_live_json(
+                ("google_news", search_query),
+                lambda: search_google_news(search_query, limit=8),
+                ttl_seconds=LIVE_LOOKUP_CACHE_SECONDS,
+            ),
+            mode,
+            search_query,
+        )
+    if mode == "music":
+        return search_music_results(search_query, limit=6, ranking_query=is_ranking_query(effective_text))
+    return rank_search_results(
+        cached_live_json(
+            ("duckduckgo_web", search_query),
+            lambda: search_duckduckgo_web(search_query, limit=8),
+            ttl_seconds=LIVE_LOOKUP_CACHE_SECONDS,
+        ),
+        mode,
+        search_query,
+    )
 
 
 def trim_search_snippet(text, max_length=110):
@@ -1272,54 +1590,44 @@ def fallback_live_search_reply(query, mode, results):
     return f"我啱啱上網搵到最貼近嘅結果係 {title}。如果你想，我可以再幫你睇多幾個來源。"
 
 
-def build_live_search_reply(incoming_text):
-    plan = build_live_search_plan(incoming_text)
+def build_live_search_reply(incoming_text, conn=None, wa_id=""):
+    effective_text = expand_live_search_followup_text(conn, wa_id, incoming_text)
+    plan = build_live_search_plan(effective_text)
     if not plan or not plan.get("should_search"):
         return None
 
     mode = plan.get("mode") or "web"
     search_query = clean_text(plan.get("query"))
     try:
-        if mode == "weather":
-            weather_summary = build_live_weather_reply(incoming_text)
-            if not weather_summary:
-                return None
-            results = [
-                {
-                    "title": "香港天文台官方資料",
-                    "source": "香港天文台",
-                    "published_at": hk_now().strftime("%Y-%m-%d %H:%M"),
-                    "snippet": weather_summary,
-                    "url": "https://www.hko.gov.hk/",
-                }
-            ]
-        elif mode == "news":
-            results = rank_search_results(
-                cached_live_json(
-                    ("google_news", search_query),
-                    lambda: search_google_news(search_query, limit=8),
-                    ttl_seconds=LIVE_LOOKUP_CACHE_SECONDS,
-                ),
-                mode,
-                search_query,
-            )
-        elif mode == "music":
-            results = search_music_results(search_query, limit=6)
-        else:
-            results = rank_search_results(
-                cached_live_json(
-                    ("duckduckgo_web", search_query),
-                    lambda: search_duckduckgo_web(search_query, limit=8),
-                    ttl_seconds=LIVE_LOOKUP_CACHE_SECONDS,
-                ),
-                mode,
-                search_query,
-            )
+        results = fetch_live_search_results(mode, search_query, effective_text)
     except Exception:
         return "我啱啱上網查資料嗰下失敗咗，未夠把握就唔想亂答，你隔一陣再問我一次好唔好？"
 
     if not results:
         return "我啱啱上網幫你搵過，但暫時未見到夠準嘅結果，要唔要你換個講法我再查？"
+
+    if mode in {"news", "music", "web"}:
+        review = review_live_search_results(incoming_text, effective_text, mode, search_query, results)
+        if review.get("decision") == "refine":
+            refined_query = clean_text(review.get("refined_query"))
+            if refined_query and refined_query != search_query:
+                search_query = refined_query
+                try:
+                    results = fetch_live_search_results(mode, search_query, effective_text)
+                except Exception:
+                    return "我啱啱上網查資料嗰下失敗咗，未夠把握就唔想亂答，你隔一陣再問我一次好唔好？"
+                if not results:
+                    return "我啱啱上網幫你搵過，但暫時未見到夠準嘅結果，要唔要你換個講法我再查？"
+                review = review_live_search_results(incoming_text, effective_text, mode, search_query, results)
+        if review.get("decision") == "abstain":
+            music_chart_guard_reply = build_music_chart_guard_reply(effective_text, results)
+            if music_chart_guard_reply:
+                return music_chart_guard_reply
+            return build_live_search_abstain_reply(mode, results, review_reason=review.get("reason"))
+
+    music_chart_guard_reply = build_music_chart_guard_reply(effective_text, results)
+    if music_chart_guard_reply:
+        return music_chart_guard_reply
 
     search_lines = []
     for index, item in enumerate(results[:5], start=1):
@@ -1334,9 +1642,13 @@ def build_live_search_reply(incoming_text):
             bits.append(f"連結：{clean_text(item.get('url'))}")
         search_lines.append("\n".join(bits))
 
+    extra_context_line = ""
+    if clean_text(effective_text) != clean_text(incoming_text):
+        extra_context_line = f"補充上下文：{clean_text(effective_text)}\n"
+
     prompt = f"""
 用戶剛剛問：{clean_text(incoming_text)}
-實際搜尋關鍵字：{search_query}
+{extra_context_line}實際搜尋關鍵字：{search_query}
 目前香港時間：{hk_now().strftime('%Y-%m-%d %H:%M')}
 搜尋模式：{"官方天氣資料" if mode == "weather" else ("最新新聞" if mode == "news" else ("音樂 / 新歌搜尋" if mode == "music" else "網頁搜尋"))}
 
@@ -4257,7 +4569,7 @@ def ensure_reply_worker_running(wa_id, profile_name=""):
 
 
 def generate_reply(conn, wa_id, profile_name, incoming_text, image_inputs=None, image_categories=None):
-    live_search_reply = build_live_search_reply(incoming_text)
+    live_search_reply = build_live_search_reply(incoming_text, conn=conn, wa_id=wa_id)
     if live_search_reply:
         return live_search_reply
 
