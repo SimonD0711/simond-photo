@@ -186,6 +186,145 @@ ARCHIVE_SEARCH_MARKERS = (
 )
 ARCHIVE_CJK_STOP_CHARS = set("我你妳佢他她的咗左咩乜呀啊啦喇呢嗎吗吧有係系去到同埋又都就會想要過返翻")
 
+SUSU_SETTINGS_TABLE = "wa_susu_settings"
+RUNTIME_SETTINGS_CACHE_TTL_SECONDS = 5
+RUNTIME_SETTINGS_LOCK = threading.Lock()
+RUNTIME_SETTINGS_CACHE = {"values": None, "expires_at": 0.0}
+SUSU_RUNTIME_SETTING_SPECS = {
+    "system_persona": {"type": "multiline", "default": SYSTEM_PERSONA, "max_length": 12000},
+    "primary_user_memory": {"type": "multiline", "default": PRIMARY_USER_MEMORY, "max_length": 12000},
+    "relay_model": {"type": "text", "default": RELAY_MODEL, "max_length": 120},
+    "relay_fallback_model": {"type": "text", "default": RELAY_FALLBACK_MODEL, "max_length": 120},
+    "gemini_model": {"type": "text", "default": GEMINI_MODEL, "max_length": 120},
+    "proactive_enabled": {"type": "bool", "default": PROACTIVE_ENABLED},
+    "proactive_scan_seconds": {"type": "int", "default": PROACTIVE_SCAN_SECONDS, "min": 60, "max": 3600},
+    "proactive_min_silence_minutes": {"type": "int", "default": PROACTIVE_MIN_SILENCE_MINUTES, "min": 5, "max": 1440},
+    "proactive_cooldown_minutes": {"type": "int", "default": PROACTIVE_COOLDOWN_MINUTES, "min": 10, "max": 2880},
+    "proactive_reply_window_minutes": {"type": "int", "default": PROACTIVE_REPLY_WINDOW_MINUTES, "min": 10, "max": 1440},
+    "proactive_conversation_window_hours": {"type": "int", "default": PROACTIVE_CONVERSATION_WINDOW_HOURS, "min": 1, "max": 168},
+    "proactive_max_per_service_day": {"type": "int", "default": PROACTIVE_MAX_PER_SERVICE_DAY, "min": 0, "max": 20},
+    "proactive_min_inbound_messages": {"type": "int", "default": PROACTIVE_MIN_INBOUND_MESSAGES, "min": 1, "max": 200},
+}
+
+
+def default_runtime_settings():
+    return {key: spec["default"] for key, spec in SUSU_RUNTIME_SETTING_SPECS.items()}
+
+
+def normalize_runtime_multiline(value, fallback=""):
+    text = str(fallback if value is None else value).replace("\r\n", "\n").replace("\r", "\n").strip()
+    return re.sub(r"\n{3,}", "\n\n", text)
+
+
+def normalize_runtime_text(value, fallback=""):
+    return re.sub(r"\s+", " ", str(fallback if value is None else value).strip())
+
+
+def parse_runtime_bool(value, default=False):
+    text = str(value).strip().lower()
+    if text in {"1", "true", "yes", "on"}:
+        return True
+    if text in {"0", "false", "no", "off"}:
+        return False
+    return bool(default)
+
+
+def parse_runtime_int(value, default=0, minimum=None, maximum=None):
+    try:
+        parsed = int(str(value).strip())
+    except Exception:
+        parsed = int(default)
+    if minimum is not None:
+        parsed = max(minimum, parsed)
+    if maximum is not None:
+        parsed = min(maximum, parsed)
+    return parsed
+
+
+def coerce_runtime_setting_value(key, raw_value):
+    spec = SUSU_RUNTIME_SETTING_SPECS[key]
+    setting_type = spec["type"]
+    default = spec["default"]
+    if setting_type == "bool":
+        return parse_runtime_bool(raw_value, default)
+    if setting_type == "int":
+        return parse_runtime_int(raw_value, default, spec.get("min"), spec.get("max"))
+    if setting_type == "multiline":
+        text = normalize_runtime_multiline(raw_value, default)[: spec.get("max_length", 12000)]
+        return text or default
+    text = normalize_runtime_text(raw_value, default)[: spec.get("max_length", 255)]
+    return text or default
+
+
+def serialize_runtime_setting_value(key, raw_value):
+    value = coerce_runtime_setting_value(key, raw_value)
+    if SUSU_RUNTIME_SETTING_SPECS[key]["type"] == "bool":
+        return "1" if value else "0"
+    return str(value)
+
+
+def reset_runtime_settings_cache():
+    with RUNTIME_SETTINGS_LOCK:
+        RUNTIME_SETTINGS_CACHE["values"] = None
+        RUNTIME_SETTINGS_CACHE["expires_at"] = 0.0
+
+
+def ensure_runtime_settings_table(conn):
+    conn.execute(
+        f"""
+        CREATE TABLE IF NOT EXISTS {SUSU_SETTINGS_TABLE} (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL DEFAULT '',
+            updated_at TEXT NOT NULL
+        )
+        """
+    )
+    seeded_at = datetime.now(timezone.utc).isoformat()
+    for key, spec in SUSU_RUNTIME_SETTING_SPECS.items():
+        conn.execute(
+            f"""
+            INSERT OR IGNORE INTO {SUSU_SETTINGS_TABLE} (key, value, updated_at)
+            VALUES (?, ?, ?)
+            """,
+            (key, serialize_runtime_setting_value(key, spec["default"]), seeded_at),
+        )
+
+
+def load_runtime_settings_from_db():
+    settings = default_runtime_settings()
+    if not DB_PATH.exists():
+        return settings
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    try:
+        ensure_runtime_settings_table(conn)
+        rows = conn.execute(f"SELECT key, value FROM {SUSU_SETTINGS_TABLE}").fetchall()
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        return settings
+    finally:
+        conn.close()
+    for row in rows:
+        key = row["key"]
+        if key in SUSU_RUNTIME_SETTING_SPECS:
+            settings[key] = coerce_runtime_setting_value(key, row["value"])
+    return settings
+
+
+def get_runtime_settings(force=False):
+    now_ts = time.time()
+    with RUNTIME_SETTINGS_LOCK:
+        cached_values = RUNTIME_SETTINGS_CACHE["values"]
+        expires_at = RUNTIME_SETTINGS_CACHE["expires_at"]
+    if not force and cached_values and now_ts < expires_at:
+        return dict(cached_values)
+    settings = load_runtime_settings_from_db()
+    with RUNTIME_SETTINGS_LOCK:
+        RUNTIME_SETTINGS_CACHE["values"] = dict(settings)
+        RUNTIME_SETTINGS_CACHE["expires_at"] = now_ts + RUNTIME_SETTINGS_CACHE_TTL_SECONDS
+    return dict(settings)
+
 
 def utc_now():
     return datetime.now(timezone.utc).isoformat()
@@ -260,12 +399,15 @@ def style_window_text(now=None):
 
 def get_relay_model_order(now=None):
     now = now or hk_now()
+    settings = get_runtime_settings()
+    relay_model = normalize_runtime_text(settings.get("relay_model"), RELAY_MODEL)
+    relay_fallback_model = normalize_runtime_text(settings.get("relay_fallback_model"), RELAY_FALLBACK_MODEL)
     if is_night_mode(now):
-        primary = RELAY_FALLBACK_MODEL or RELAY_MODEL
-        secondary = RELAY_MODEL if RELAY_MODEL != primary else ""
+        primary = relay_fallback_model or relay_model
+        secondary = relay_model if relay_model != primary else ""
     else:
-        primary = RELAY_MODEL
-        secondary = RELAY_FALLBACK_MODEL if RELAY_FALLBACK_MODEL != primary else ""
+        primary = relay_model
+        secondary = relay_fallback_model if relay_fallback_model != primary else ""
     return primary, secondary
 
 
@@ -413,6 +555,7 @@ def get_db():
         )
         """
     )
+    ensure_runtime_settings_table(conn)
     ensure_column(conn, "wa_session_memories", "bucket", "bucket TEXT NOT NULL DEFAULT 'within_7d'")
     ensure_column(conn, "wa_session_memories", "observed_at", "observed_at TEXT NOT NULL DEFAULT ''")
     ensure_column(conn, "wa_memories", "memory_key", "memory_key TEXT NOT NULL DEFAULT ''")
@@ -1088,7 +1231,9 @@ def bump_proactive_slot_outcome(conn, wa_id, slot_key, success):
 
 
 def finalize_stale_proactive_events(conn, wa_id=None):
-    cutoff = (datetime.now(timezone.utc) - timedelta(minutes=PROACTIVE_REPLY_WINDOW_MINUTES)).isoformat()
+    settings = get_runtime_settings()
+    reply_window_minutes = int(settings["proactive_reply_window_minutes"])
+    cutoff = (datetime.now(timezone.utc) - timedelta(minutes=reply_window_minutes)).isoformat()
     sql = """
         SELECT id, wa_id, slot_key
         FROM wa_proactive_events
@@ -1116,6 +1261,8 @@ def mark_proactive_reply(conn, wa_id, inbound_at_text):
     inbound_at = parse_iso_dt(inbound_at_text)
     if not inbound_at:
         return
+    settings = get_runtime_settings()
+    reply_window_minutes = int(settings["proactive_reply_window_minutes"])
     row = conn.execute(
         """
         SELECT id, created_at, slot_key
@@ -1133,7 +1280,7 @@ def mark_proactive_reply(conn, wa_id, inbound_at_text):
     if not proactive_at or inbound_at <= proactive_at:
         return
     delay = int((inbound_at - proactive_at).total_seconds())
-    if delay > PROACTIVE_REPLY_WINDOW_MINUTES * 60:
+    if delay > reply_window_minutes * 60:
         return
     conn.execute(
         """
@@ -1378,6 +1525,9 @@ def heuristic_extract_memories(incoming_text):
 
 
 def call_gemini(prompt_text, temperature=0.82, max_tokens=220, system_prompt=None, image_inputs=None):
+    settings = get_runtime_settings()
+    effective_system_prompt = system_prompt or settings["system_persona"]
+    gemini_model = normalize_runtime_text(settings.get("gemini_model"), GEMINI_MODEL)
     parts = [{"text": prompt_text}]
     for item in image_inputs or []:
         parts.append(
@@ -1389,7 +1539,7 @@ def call_gemini(prompt_text, temperature=0.82, max_tokens=220, system_prompt=Non
             }
         )
     payload = {
-        "system_instruction": {"parts": [{"text": system_prompt or SYSTEM_PERSONA}]},
+        "system_instruction": {"parts": [{"text": effective_system_prompt}]},
         "contents": [{"role": "user", "parts": parts}],
         "generationConfig": {
             "temperature": temperature,
@@ -1398,7 +1548,7 @@ def call_gemini(prompt_text, temperature=0.82, max_tokens=220, system_prompt=Non
         },
     }
     request = Request(
-        f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent?key={GEMINI_API_KEY}",
+        f"https://generativelanguage.googleapis.com/v1beta/models/{gemini_model}:generateContent?key={GEMINI_API_KEY}",
         data=json.dumps(payload).encode("utf-8"),
         headers={"Content-Type": "application/json"},
         method="POST",
@@ -1415,6 +1565,7 @@ def call_gemini(prompt_text, temperature=0.82, max_tokens=220, system_prompt=Non
 
 
 def call_openai_compatible(prompt_text, api_key, model, base_url, temperature=0.82, max_tokens=220, system_prompt=None, image_inputs=None):
+    effective_system_prompt = system_prompt or get_runtime_settings()["system_persona"]
     user_content = prompt_text
     if image_inputs:
         user_content = [{"type": "text", "text": prompt_text}]
@@ -1430,7 +1581,7 @@ def call_openai_compatible(prompt_text, api_key, model, base_url, temperature=0.
     payload = {
         "model": model,
         "messages": [
-            {"role": "system", "content": system_prompt or SYSTEM_PERSONA},
+            {"role": "system", "content": effective_system_prompt},
             {"role": "user", "content": user_content},
         ],
         "temperature": temperature,
@@ -1899,6 +2050,7 @@ def proactive_slot_hint(now=None):
 
 def build_proactive_prompt(conn, wa_id, profile_name, now=None):
     now = now or hk_now()
+    settings = get_runtime_settings()
     history_lines = []
     for item in load_recent_messages(conn, wa_id, limit=8):
         speaker = "對方" if item["direction"] == "inbound" else "蘇蘇"
@@ -1930,7 +2082,7 @@ def build_proactive_prompt(conn, wa_id, profile_name, now=None):
 對方 WhatsApp 顯示名稱：{profile_name or "對方"}
 
 長期生活習慣：
-{PRIMARY_USER_MEMORY}
+{settings["primary_user_memory"]}
 
 長期補充記憶：
 {memory_text}
@@ -1969,12 +2121,18 @@ def build_proactive_prompt(conn, wa_id, profile_name, now=None):
 def evaluate_proactive_candidate(conn, wa_id, profile_name="", now=None):
     now = now or hk_now()
     now_utc = now.astimezone(timezone.utc)
+    settings = get_runtime_settings()
+    conversation_window_hours = int(settings["proactive_conversation_window_hours"])
+    min_silence_minutes = int(settings["proactive_min_silence_minutes"])
+    cooldown_minutes = int(settings["proactive_cooldown_minutes"])
+    min_inbound_messages = int(settings["proactive_min_inbound_messages"])
+    max_per_service_day = int(settings["proactive_max_per_service_day"])
     finalize_stale_proactive_events(conn, wa_id)
 
     last_inbound = get_last_message_time(conn, wa_id, "inbound")
     if not last_inbound:
         return {"eligible": False, "reason": "no_inbound"}
-    if now_utc - last_inbound > timedelta(hours=PROACTIVE_CONVERSATION_WINDOW_HOURS):
+    if now_utc - last_inbound > timedelta(hours=conversation_window_hours):
         return {"eligible": False, "reason": "window_closed"}
 
     last_row = get_last_message_row(conn, wa_id)
@@ -1988,7 +2146,7 @@ def evaluate_proactive_candidate(conn, wa_id, profile_name="", now=None):
         return {"eligible": False, "reason": "no_last_message_time"}
 
     silence_minutes = max((now_utc - last_any).total_seconds() / 60.0, 0.0)
-    if silence_minutes < PROACTIVE_MIN_SILENCE_MINUTES:
+    if silence_minutes < min_silence_minutes:
         return {"eligible": False, "reason": "cooling", "silence_minutes": silence_minutes}
 
     if get_pending_proactive_event(conn, wa_id):
@@ -1997,14 +2155,14 @@ def evaluate_proactive_candidate(conn, wa_id, profile_name="", now=None):
     last_proactive = get_last_proactive_event(conn, wa_id)
     if last_proactive:
         last_proactive_at = parse_iso_dt(last_proactive.get("created_at", ""))
-        if last_proactive_at and now_utc - last_proactive_at < timedelta(minutes=PROACTIVE_COOLDOWN_MINUTES):
+        if last_proactive_at and now_utc - last_proactive_at < timedelta(minutes=cooldown_minutes):
             return {"eligible": False, "reason": "proactive_cooldown"}
 
-    if count_inbound_messages(conn, wa_id) < PROACTIVE_MIN_INBOUND_MESSAGES:
+    if count_inbound_messages(conn, wa_id) < min_inbound_messages:
         return {"eligible": False, "reason": "too_new"}
 
     daily_count = count_proactive_for_service_day(conn, wa_id, now)
-    if daily_count >= PROACTIVE_MAX_PER_SERVICE_DAY:
+    if daily_count >= max_per_service_day:
         return {"eligible": False, "reason": "daily_cap"}
 
     slot_key = proactive_slot_key(now)
@@ -2014,7 +2172,7 @@ def evaluate_proactive_candidate(conn, wa_id, profile_name="", now=None):
         for bucket in ("within_24h", "within_3d", "within_7d")
     )
     image_bonus = 0.08 if load_image_stats_summary(conn, wa_id) else 0.0
-    silence_bonus = min(max((silence_minutes - PROACTIVE_MIN_SILENCE_MINUTES) / 180.0, 0.0), 1.0) * 1.2
+    silence_bonus = min(max((silence_minutes - min_silence_minutes) / 180.0, 0.0), 1.0) * 1.2
     slot_bias = {
         "morning": -0.22,
         "afternoon": 0.18,
@@ -2124,7 +2282,8 @@ def send_proactive_message(conn, candidate, now=None):
 
 
 def run_proactive_scan_once():
-    if not PROACTIVE_ENABLED:
+    settings = get_runtime_settings()
+    if not settings["proactive_enabled"]:
         return {"ok": True, "status": "disabled"}
     if not ACCESS_TOKEN or not PHONE_NUMBER_ID:
         return {"ok": False, "status": "missing_whatsapp_credentials"}
@@ -2165,7 +2324,8 @@ def proactive_loop():
             run_proactive_scan_once()
         except Exception:
             pass
-        time.sleep(max(PROACTIVE_SCAN_SECONDS, 60))
+        scan_seconds = int(get_runtime_settings().get("proactive_scan_seconds", PROACTIVE_SCAN_SECONDS))
+        time.sleep(max(scan_seconds, 60))
 
 
 def send_whatsapp_reaction(to_number, message_id, emoji):
@@ -2466,6 +2626,7 @@ def reminder_loop():
 
 
 def build_prompt(conn, wa_id, profile_name, incoming_text, image_inputs=None, image_categories=None):
+    settings = get_runtime_settings()
     lookup_archive = should_lookup_archive(incoming_text)
     history_lines = []
     quotable = []  # [(message_id, preview)]
@@ -2501,7 +2662,7 @@ def build_prompt(conn, wa_id, profile_name, incoming_text, image_inputs=None, im
             limit=4,
         )
     history_text = "\n".join(history_lines[-12:]) if history_lines else "（暂时未有最近聊天）"
-    habit_text = PRIMARY_USER_MEMORY
+    habit_text = settings["primary_user_memory"]
     memory_text = "\n".join(dynamic_memories) if dynamic_memories else "（暂时未有补充长期记忆）"
     within_24h_text = "\n".join(within_24h_memories) if within_24h_memories else "（暂时未有 24 小时内记忆）"
     within_3d_text = "\n".join(within_3d_memories) if within_3d_memories else "（暂时未有三天内记忆）"
@@ -2765,12 +2926,13 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         parsed = urlparse(self.path)
         if parsed.path == "/health":
+            settings = get_runtime_settings()
             relay_primary, relay_secondary = get_relay_model_order()
             fallback_model = ""
             if RELAY_API_KEY and relay_secondary:
                 fallback_model = relay_secondary
             elif GEMINI_API_KEY:
-                fallback_model = GEMINI_MODEL
+                fallback_model = settings["gemini_model"]
             elif MINIMAX_API_KEY:
                 fallback_model = MINIMAX_MODEL
             elif GROQ_API_KEY:
@@ -2783,16 +2945,16 @@ class Handler(BaseHTTPRequestHandler):
                     "time_mode": "night" if is_night_mode() else "day",
                     "time_profile": get_time_profile(),
                     "timezone": "Asia/Hong_Kong",
-                    "primary_model": relay_primary if RELAY_API_KEY else (GEMINI_MODEL if GEMINI_API_KEY else (MINIMAX_MODEL if MINIMAX_API_KEY else GROQ_MODEL)),
+                    "primary_model": relay_primary if RELAY_API_KEY else (settings["gemini_model"] if GEMINI_API_KEY else (MINIMAX_MODEL if MINIMAX_API_KEY else GROQ_MODEL)),
                     "fallback_model": fallback_model,
                     "has_relay_key": bool(RELAY_API_KEY),
                     "has_gemini_key": bool(GEMINI_API_KEY),
                     "has_minimax_key": bool(MINIMAX_API_KEY),
                     "has_groq_key": bool(GROQ_API_KEY),
-                    "proactive_enabled": PROACTIVE_ENABLED,
-                    "proactive_scan_seconds": PROACTIVE_SCAN_SECONDS,
-                    "proactive_min_silence_minutes": PROACTIVE_MIN_SILENCE_MINUTES,
-                    "proactive_cooldown_minutes": PROACTIVE_COOLDOWN_MINUTES,
+                    "proactive_enabled": settings["proactive_enabled"],
+                    "proactive_scan_seconds": settings["proactive_scan_seconds"],
+                    "proactive_min_silence_minutes": settings["proactive_min_silence_minutes"],
+                    "proactive_cooldown_minutes": settings["proactive_cooldown_minutes"],
                 }
             )
             return
@@ -2995,8 +3157,9 @@ class Handler(BaseHTTPRequestHandler):
 
 
 if __name__ == "__main__":
-    if PROACTIVE_ENABLED:
-        threading.Thread(target=proactive_loop, name="wa-proactive-loop", daemon=True).start()
+    bootstrap_conn = get_db()
+    bootstrap_conn.close()
+    threading.Thread(target=proactive_loop, name="wa-proactive-loop", daemon=True).start()
     threading.Thread(target=reminder_loop, name="wa-reminder-loop", daemon=True).start()
     server = ThreadingHTTPServer(("127.0.0.1", 9100), Handler)
     server.serve_forever()

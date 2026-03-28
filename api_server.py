@@ -1198,6 +1198,141 @@ def current_session_bucket(observed_at, now_utc=None):
     return ""
 
 
+SUSU_SETTINGS_TABLE = "wa_susu_settings"
+SUSU_SETTING_SPECS = {
+    "system_persona": {"type": "multiline", "max_length": 12000, "default": "", "required": True},
+    "primary_user_memory": {"type": "multiline", "max_length": 12000, "default": "", "required": True},
+    "relay_model": {"type": "text", "max_length": 120, "default": os.environ.get("WA_RELAY_MODEL", "claude-opus-4-6"), "required": True},
+    "relay_fallback_model": {"type": "text", "max_length": 120, "default": os.environ.get("WA_RELAY_FALLBACK_MODEL", "claude-sonnet-4-6"), "required": False},
+    "gemini_model": {"type": "text", "max_length": 120, "default": os.environ.get("WA_GEMINI_MODEL", "gemini-2.5-flash"), "required": True},
+    "proactive_enabled": {"type": "bool", "default": True},
+    "proactive_scan_seconds": {"type": "int", "default": int(os.environ.get("WA_PROACTIVE_SCAN_SECONDS", "300")), "min": 60, "max": 3600},
+    "proactive_min_silence_minutes": {"type": "int", "default": int(os.environ.get("WA_PROACTIVE_MIN_SILENCE_MINUTES", "45")), "min": 5, "max": 1440},
+    "proactive_cooldown_minutes": {"type": "int", "default": int(os.environ.get("WA_PROACTIVE_COOLDOWN_MINUTES", "180")), "min": 10, "max": 2880},
+    "proactive_reply_window_minutes": {"type": "int", "default": int(os.environ.get("WA_PROACTIVE_REPLY_WINDOW_MINUTES", "90")), "min": 10, "max": 1440},
+    "proactive_conversation_window_hours": {"type": "int", "default": int(os.environ.get("WA_PROACTIVE_CONVERSATION_WINDOW_HOURS", "24")), "min": 1, "max": 168},
+    "proactive_max_per_service_day": {"type": "int", "default": int(os.environ.get("WA_PROACTIVE_MAX_PER_SERVICE_DAY", "2")), "min": 0, "max": 20},
+    "proactive_min_inbound_messages": {"type": "int", "default": int(os.environ.get("WA_PROACTIVE_MIN_INBOUND_MESSAGES", "8")), "min": 1, "max": 200},
+}
+
+
+def normalize_susu_multiline(value, fallback=""):
+    text = str(fallback if value is None else value).replace("\r\n", "\n").replace("\r", "\n").strip()
+    return re.sub(r"\n{3,}", "\n\n", text)
+
+
+def normalize_susu_text(value, fallback=""):
+    return re.sub(r"\s+", " ", str(fallback if value is None else value).strip())
+
+
+def parse_susu_bool(value, default=False):
+    text = str(value).strip().lower()
+    if text in {"1", "true", "yes", "on"}:
+        return True
+    if text in {"0", "false", "no", "off"}:
+        return False
+    return bool(default)
+
+
+def parse_susu_int(value, default=0, minimum=None, maximum=None):
+    try:
+        parsed = int(str(value).strip())
+    except Exception:
+        parsed = int(default)
+    if minimum is not None:
+        parsed = max(minimum, parsed)
+    if maximum is not None:
+        parsed = min(maximum, parsed)
+    return parsed
+
+
+def coerce_susu_setting_value(key, raw_value):
+    spec = SUSU_SETTING_SPECS[key]
+    setting_type = spec["type"]
+    default = spec["default"]
+    if setting_type == "bool":
+        return parse_susu_bool(raw_value, default)
+    if setting_type == "int":
+        return parse_susu_int(raw_value, default, spec.get("min"), spec.get("max"))
+    if setting_type == "multiline":
+        return normalize_susu_multiline(raw_value, default)[: spec.get("max_length", 12000)]
+    return normalize_susu_text(raw_value, default)[: spec.get("max_length", 255)]
+
+
+def serialize_susu_setting_value(key, raw_value):
+    value = coerce_susu_setting_value(key, raw_value)
+    if SUSU_SETTING_SPECS[key]["type"] == "bool":
+        return "1" if value else "0"
+    return str(value)
+
+
+def ensure_susu_settings_table(conn):
+    conn.execute(
+        f"""
+        CREATE TABLE IF NOT EXISTS {SUSU_SETTINGS_TABLE} (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL DEFAULT '',
+            updated_at TEXT NOT NULL
+        )
+        """
+    )
+    seeded_at = utc_now()
+    for key, spec in SUSU_SETTING_SPECS.items():
+        conn.execute(
+            f"""
+            INSERT OR IGNORE INTO {SUSU_SETTINGS_TABLE} (key, value, updated_at)
+            VALUES (?, ?, ?)
+            """,
+            (key, serialize_susu_setting_value(key, spec["default"]), seeded_at),
+        )
+
+
+def fetch_susu_settings_with_conn(conn):
+    ensure_susu_settings_table(conn)
+    conn.commit()
+    rows = conn.execute(f"SELECT key, value, updated_at FROM {SUSU_SETTINGS_TABLE}").fetchall()
+    row_map = {row["key"]: row for row in rows}
+    updated_at = ""
+    values = {}
+    for key, spec in SUSU_SETTING_SPECS.items():
+        row = row_map.get(key)
+        values[key] = coerce_susu_setting_value(key, row["value"] if row else spec["default"])
+        if row and row["updated_at"] and row["updated_at"] > updated_at:
+            updated_at = row["updated_at"]
+    return {"values": values, "updated_at": updated_at}
+
+
+def update_susu_settings(changes):
+    if not isinstance(changes, dict) or not changes:
+        return {"ok": False, "detail": "Missing settings"}
+    unsupported = [key for key in changes if key not in SUSU_SETTING_SPECS]
+    if unsupported:
+        return {"ok": False, "detail": f"Unsupported setting: {unsupported[0]}"}
+    now = utc_now()
+    conn = get_wa_agent_db()
+    try:
+        ensure_susu_settings_table(conn)
+        for key, raw_value in changes.items():
+            spec = SUSU_SETTING_SPECS[key]
+            value = coerce_susu_setting_value(key, raw_value)
+            if spec.get("required") and not str(value).strip():
+                return {"ok": False, "detail": f"Missing value for {key}"}
+            conn.execute(
+                f"""
+                INSERT INTO {SUSU_SETTINGS_TABLE} (key, value, updated_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT(key) DO UPDATE SET
+                  value = excluded.value,
+                  updated_at = excluded.updated_at
+                """,
+                (key, serialize_susu_setting_value(key, value), now),
+            )
+        conn.commit()
+        return {"ok": True, "updated_at": now}
+    finally:
+        conn.close()
+
+
 def fetch_susu_contacts(conn):
     contacts = {}
     order = []
@@ -1391,6 +1526,7 @@ def fetch_susu_memory(selected_wa_id=""):
             "checked_at": utc_now(),
             "selected_wa_id": selected_wa_id,
             "selected_contact": selected_contact,
+            "susu_settings": fetch_susu_settings_with_conn(conn),
             "contacts": contacts,
             "long_term_memories": memories,
             "session_memories": session_memories,
@@ -2163,6 +2299,20 @@ class Handler(BaseHTTPRequestHandler):
                 try:
                     result = create_susu_memory(wa_id, content, kind)
                     log_admin_action(conn, "susu_memory_create", "ok" if result.get("ok") else "error", f"{wa_id}:{kind}")
+                except Exception as exc:
+                    result = {"ok": False, "detail": str(exc)}
+                self._send_json(result, 200 if result.get("ok") else 400)
+                return
+
+            if parsed.path == "/api/admin/susu-settings/update":
+                if not viewer_is_admin:
+                    self._send_json({"error": "Forbidden"}, 403)
+                    return
+                changes = data.get("settings")
+                try:
+                    result = update_susu_settings(changes)
+                    changed_keys = sorted(changes.keys()) if isinstance(changes, dict) else []
+                    log_admin_action(conn, "susu_settings_update", "ok" if result.get("ok") else "error", json.dumps(changed_keys, ensure_ascii=False))
                 except Exception as exc:
                     result = {"ok": False, "detail": str(exc)}
                 self._send_json(result, 200 if result.get("ok") else 400)
