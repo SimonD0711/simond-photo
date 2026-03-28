@@ -9,7 +9,9 @@ import os
 import random
 import re
 import sqlite3
+import sys
 import threading
+import traceback
 import textwrap
 import time
 from datetime import datetime, timedelta, timezone
@@ -27,14 +29,17 @@ except ImportError:
     ZoneInfo = None
 
 
-BASE_DIR = Path("/var/www/html")
-DB_PATH = BASE_DIR / "wa_agent.db"
+DEFAULT_BASE_DIR = Path(os.environ.get("WA_BASE_DIR", "/var/www/html"))
+BASE_DIR = DEFAULT_BASE_DIR if DEFAULT_BASE_DIR.exists() else Path(__file__).resolve().parent
+DB_PATH = Path(os.environ.get("WA_DB_PATH", str(BASE_DIR / "wa_agent.db")))
 
 VERIFY_TOKEN = os.environ.get("WA_VERIFY_TOKEN", "")
 ACCESS_TOKEN = os.environ.get("WA_ACCESS_TOKEN", "")
 PHONE_NUMBER_ID = os.environ.get("WA_PHONE_NUMBER_ID", "")
 GRAPH_VERSION = os.environ.get("WA_GRAPH_VERSION", "v22.0")
 TYPING_INDICATOR_DELAY_SECONDS = float(os.environ.get("WA_TYPING_INDICATOR_DELAY_SECONDS", "0.5"))
+REPLY_JOB_POLL_SECONDS = float(os.environ.get("WA_REPLY_JOB_POLL_SECONDS", "0.05"))
+REPLY_JOB_TERMINATE_GRACE_SECONDS = float(os.environ.get("WA_REPLY_JOB_TERMINATE_GRACE_SECONDS", "0.25"))
 PROACTIVE_ENABLED = os.environ.get("WA_PROACTIVE_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"}
 PROACTIVE_SCAN_SECONDS = int(os.environ.get("WA_PROACTIVE_SCAN_SECONDS", "300"))
 PROACTIVE_MIN_SILENCE_MINUTES = int(os.environ.get("WA_PROACTIVE_MIN_SILENCE_MINUTES", "45"))
@@ -3531,6 +3536,106 @@ def record_batch_side_effects(conn, wa_id, profile_name, combined_text, memory_t
     conn.commit()
 
 
+def generate_reply_with_fresh_conn(wa_id, profile_name, combined_text, image_inputs=None, image_categories=None):
+    local_conn = get_db()
+    try:
+        return generate_reply(
+            local_conn,
+            wa_id,
+            profile_name,
+            combined_text,
+            image_inputs=image_inputs,
+            image_categories=image_categories,
+        )
+    finally:
+        local_conn.close()
+
+
+def spawn_reply_generation_subprocess(wa_id, profile_name, combined_text, image_inputs=None, image_categories=None):
+    payload = {
+        "wa_id": wa_id,
+        "profile_name": profile_name,
+        "combined_text": combined_text,
+        "image_inputs": image_inputs or [],
+        "image_categories": image_categories or [],
+    }
+    proc = subprocess.Popen(
+        [sys.executable, str(Path(__file__).resolve()), "--reply-job"],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+        cwd=str(Path(__file__).resolve().parent),
+        env={**os.environ, "PYTHONIOENCODING": "utf-8"},
+    )
+    raw_payload = json.dumps(payload, ensure_ascii=False)
+    try:
+        if proc.stdin:
+            proc.stdin.write(raw_payload)
+            proc.stdin.close()
+    except Exception:
+        terminate_reply_generation_subprocess(proc)
+        raise
+    return proc
+
+
+def terminate_reply_generation_subprocess(proc):
+    if not proc or proc.poll() is not None:
+        return
+    try:
+        proc.terminate()
+        proc.wait(timeout=max(REPLY_JOB_TERMINATE_GRACE_SECONDS, 0.1))
+    except Exception:
+        try:
+            proc.kill()
+            proc.wait(timeout=1)
+        except Exception:
+            pass
+
+
+def read_reply_generation_subprocess_result(proc):
+    stdout_text = ""
+    stderr_text = ""
+    try:
+        if proc.stdout:
+            stdout_text = proc.stdout.read()
+    except Exception:
+        stdout_text = ""
+    try:
+        if proc.stderr:
+            stderr_text = proc.stderr.read()
+    except Exception:
+        stderr_text = ""
+
+    if proc.returncode:
+        detail = clean_text(stderr_text or stdout_text) or f"reply_job_exit_{proc.returncode}"
+        raise RuntimeError(detail)
+
+    try:
+        payload = json.loads(stdout_text or "{}")
+    except Exception as exc:
+        raise RuntimeError(f"reply_job_invalid_json: {exc}") from exc
+
+    if not payload.get("ok"):
+        raise RuntimeError(clean_text(payload.get("error")) or "reply_job_failed")
+    return payload.get("reply_text", "")
+
+
+def run_reply_generation_job_from_stdio():
+    raw_input = sys.stdin.read()
+    payload = json.loads(raw_input or "{}")
+    reply_text = generate_reply_with_fresh_conn(
+        payload.get("wa_id", ""),
+        payload.get("profile_name", ""),
+        payload.get("combined_text", ""),
+        image_inputs=payload.get("image_inputs") or [],
+        image_categories=payload.get("image_categories") or [],
+    )
+    sys.stdout.write(json.dumps({"ok": True, "reply_text": reply_text}, ensure_ascii=False))
+    sys.stdout.flush()
+
+
 def process_pending_replies_for_contact(wa_id):
     conn = get_db()
     try:
@@ -3599,15 +3704,40 @@ def process_pending_replies_for_contact(wa_id):
                 run_claude_code_streaming(last_body, wa_id)
                 skip_generate = True
             else:
+                reply_proc = None
                 try:
-                    reply_text = generate_reply(
-                        conn,
+                    reply_proc = spawn_reply_generation_subprocess(
                         wa_id,
                         profile_name,
                         combined_text,
                         image_inputs=image_inputs,
                         image_categories=image_categories,
                     )
+                except Exception as exc:
+                    reply_text = "我啱啱個腦有啲卡住咗，等我緩一緩先再同你傾，好唔好？"
+                    log_outbound_error(conn, wa_id, "model_failed", exc)
+                    if typing_stop:
+                        typing_stop.set()
+                    continue
+
+                superseded = False
+                while reply_proc.poll() is None:
+                    latest_version, latest_profile_name, _ = get_reply_worker_snapshot(wa_id)
+                    if latest_profile_name:
+                        profile_name = latest_profile_name
+                    if latest_version != target_version or get_latest_inbound_id_for_wa(wa_id) != batch_last_id:
+                        superseded = True
+                        break
+                    time.sleep(max(REPLY_JOB_POLL_SECONDS, 0.01))
+
+                if superseded:
+                    terminate_reply_generation_subprocess(reply_proc)
+                    if typing_stop:
+                        typing_stop.set()
+                    continue
+
+                try:
+                    reply_text = read_reply_generation_subprocess_result(reply_proc)
                 except Exception as exc:
                     reply_text = "我啱啱個腦有啲卡住咗，等我緩一緩先再同你傾，好唔好？"
                     log_outbound_error(conn, wa_id, "model_failed", exc)
@@ -3868,6 +3998,7 @@ class Handler(BaseHTTPRequestHandler):
         conn = get_db()
         try:
             dirty_contacts = {}
+            read_candidates = []
             for event in extract_text_messages(payload):
                 if has_processed_message(conn, event["message_id"]):
                     continue
@@ -3904,9 +4035,17 @@ class Handler(BaseHTTPRequestHandler):
                 )
                 if event["message_type"] in ("text", "image"):
                     dirty_contacts[event["wa_id"]] = event["profile_name"]
+                    if event["message_id"]:
+                        read_candidates.append(event["message_id"])
             conn.commit()
         finally:
             conn.close()
+
+        for message_id in read_candidates:
+            try:
+                send_whatsapp_mark_as_read(message_id)
+            except Exception:
+                pass
 
         for wa_id, profile_name in dirty_contacts.items():
             ensure_reply_worker_running(wa_id, profile_name)
@@ -3915,6 +4054,19 @@ class Handler(BaseHTTPRequestHandler):
 
 
 if __name__ == "__main__":
+    if len(sys.argv) > 1 and sys.argv[1] == "--reply-job":
+        try:
+            run_reply_generation_job_from_stdio()
+            sys.exit(0)
+        except Exception:
+            traceback.print_exc(file=sys.stderr)
+            try:
+                sys.stdout.write(json.dumps({"ok": False, "error": traceback.format_exc()}, ensure_ascii=False))
+                sys.stdout.flush()
+            except Exception:
+                pass
+            sys.exit(1)
+
     bootstrap_conn = get_db()
     bootstrap_conn.close()
     threading.Thread(target=proactive_loop, name="wa-proactive-loop", daemon=True).start()
