@@ -80,6 +80,8 @@ HKO_OPEN_DATA_BASE_URL = "https://data.weather.gov.hk/weatherAPI/opendata/weathe
 LIVE_LOOKUP_CACHE_SECONDS = 180
 _live_lookup_cache = {}
 _live_lookup_cache_lock = threading.Lock()
+_reply_worker_states = {}
+_reply_worker_states_lock = threading.Lock()
 
 WEATHER_QUERY_KEYWORDS = (
     "天氣", "天气", "weather", "氣溫", "气温", "幾度", "几度", "落雨", "落唔落雨",
@@ -1358,6 +1360,44 @@ def has_processed_message(conn, message_id):
     return bool(row)
 
 
+def mark_reply_worker_dirty(wa_id, profile_name=""):
+    should_start = False
+    with _reply_worker_states_lock:
+        state = _reply_worker_states.setdefault(
+            wa_id,
+            {"version": 0, "profile_name": "", "running": False},
+        )
+        state["version"] += 1
+        if profile_name:
+            state["profile_name"] = profile_name
+        if not state["running"]:
+            state["running"] = True
+            should_start = True
+        version = state["version"]
+    return should_start, version
+
+
+def get_reply_worker_snapshot(wa_id):
+    with _reply_worker_states_lock:
+        state = _reply_worker_states.setdefault(
+            wa_id,
+            {"version": 0, "profile_name": "", "running": False},
+        )
+        return state["version"], state["profile_name"], state["running"]
+
+
+def finish_reply_worker_if_idle(wa_id, observed_version):
+    with _reply_worker_states_lock:
+        state = _reply_worker_states.setdefault(
+            wa_id,
+            {"version": 0, "profile_name": "", "running": False},
+        )
+        if state["version"] != observed_version:
+            return False
+        state["running"] = False
+        return True
+
+
 def load_recent_messages(conn, wa_id, limit=12):
     rows = conn.execute(
         """
@@ -1901,7 +1941,7 @@ def load_pending_inbound_batch(conn, wa_id, current_inbound_id):
     last_outbound_id = int(last_outbound["last_outbound_id"]) if last_outbound else 0
     rows = conn.execute(
         """
-        SELECT id, body, message_type, raw_json
+        SELECT id, message_id, body, message_type, raw_json
         FROM wa_messages
         WHERE wa_id = ?
           AND direction = 'inbound'
@@ -3400,8 +3440,167 @@ def rewrite_as_complete_message(profile_name, incoming_text, draft_reply):
 - 要有少少關心或者追問
 - 唔好太正經
 - 只輸出回覆本身
-""".strip()
+    """.strip()
     return generate_model_text(prompt, temperature=0.72, max_tokens=180)
+
+
+def log_outbound_error(conn, wa_id, error_type, error_detail):
+    conn.execute(
+        """
+        INSERT INTO wa_messages (wa_id, direction, message_id, message_type, body, raw_json, created_at)
+        VALUES (?, 'outbound', '', 'error', ?, ?, ?)
+        """,
+        (
+            wa_id,
+            error_type,
+            json.dumps({"error": str(error_detail)}, ensure_ascii=False),
+            utc_now(),
+        ),
+    )
+    conn.commit()
+
+
+def record_batch_side_effects(conn, wa_id, profile_name, combined_text, memory_text, image_categories):
+    if memory_text:
+        maybe_extract_memories(conn, wa_id, profile_name, memory_text)
+    if combined_text:
+        maybe_extract_session_memories(conn, wa_id, combined_text)
+        try:
+            remind_at, remind_content = parse_reminder(wa_id, combined_text)
+            if remind_at and remind_content:
+                save_reminder(conn, wa_id, remind_at, remind_content)
+        except Exception:
+            pass
+    if image_categories:
+        bump_image_stats(conn, wa_id, image_categories)
+    conn.commit()
+
+
+def process_pending_replies_for_contact(wa_id):
+    conn = get_db()
+    try:
+        while True:
+            target_version, profile_name, _ = get_reply_worker_snapshot(wa_id)
+            latest_inbound_id = get_latest_inbound_id(conn, wa_id)
+            if not latest_inbound_id:
+                if finish_reply_worker_if_idle(wa_id, target_version):
+                    return
+                continue
+
+            pending_rows = load_pending_inbound_batch(conn, wa_id, latest_inbound_id)
+            if not pending_rows:
+                if finish_reply_worker_if_idle(wa_id, target_version):
+                    return
+                continue
+
+            combined_text, memory_text = build_combined_user_input(pending_rows)
+            image_inputs = collect_image_inputs(pending_rows)
+            if not combined_text and not image_inputs:
+                if finish_reply_worker_if_idle(wa_id, target_version):
+                    return
+                continue
+
+            image_categories = classify_image_categories(combined_text, image_inputs)
+            batch_last_id = pending_rows[-1]["id"]
+            batch_last_message_id = clean_text(pending_rows[-1].get("message_id"))
+            last_body = clean_text(pending_rows[-1]["body"]) if pending_rows else (combined_text or "").strip()
+
+            reply_text = None
+            skip_generate = False
+            if wa_id == CLAUDE_WA_ID and not image_inputs:
+                latest_version, _, _ = get_reply_worker_snapshot(wa_id)
+                if latest_version != target_version or get_latest_inbound_id(conn, wa_id) != batch_last_id:
+                    continue
+                run_claude_code_streaming(last_body, wa_id)
+                skip_generate = True
+            else:
+                try:
+                    reply_text = generate_reply(
+                        conn,
+                        wa_id,
+                        profile_name,
+                        combined_text,
+                        image_inputs=image_inputs,
+                        image_categories=image_categories,
+                    )
+                except Exception as exc:
+                    reply_text = "我啱啱個腦有啲卡住咗，等我緩一緩先再同你傾，好唔好？"
+                    log_outbound_error(conn, wa_id, "model_failed", exc)
+
+            latest_version, latest_profile_name, _ = get_reply_worker_snapshot(wa_id)
+            if latest_profile_name:
+                profile_name = latest_profile_name
+            if latest_version != target_version or get_latest_inbound_id(conn, wa_id) != batch_last_id:
+                continue
+
+            if skip_generate:
+                record_batch_side_effects(conn, wa_id, profile_name, combined_text, memory_text, image_categories)
+                continue
+
+            if reply_text is None:
+                if finish_reply_worker_if_idle(wa_id, target_version):
+                    return
+                continue
+
+            try:
+                bubbles = split_reply_bubbles(reply_text, night_mode=is_night_mode())
+                bubbles = maybe_stage_followup_bubbles(bubbles, night_mode=is_night_mode())
+                reaction_emoji = pick_susu_reaction(combined_text or "", night_mode=is_night_mode())
+
+                latest_version, _, _ = get_reply_worker_snapshot(wa_id)
+                if latest_version != target_version or get_latest_inbound_id(conn, wa_id) != batch_last_id:
+                    continue
+
+                if reaction_emoji and batch_last_message_id:
+                    try:
+                        send_whatsapp_reaction(wa_id, batch_last_message_id, reaction_emoji)
+                    except Exception:
+                        pass
+
+                interrupted = False
+                for index, bubble in enumerate(bubbles):
+                    if index > 0:
+                        time.sleep(1.05)
+                    latest_version, _, _ = get_reply_worker_snapshot(wa_id)
+                    if latest_version != target_version or get_latest_inbound_id(conn, wa_id) != batch_last_id:
+                        interrupted = True
+                        break
+
+                    response = send_whatsapp_text(wa_id, bubble)
+                    conn.execute(
+                        """
+                        INSERT INTO wa_messages (wa_id, direction, message_id, message_type, body, raw_json, created_at)
+                        VALUES (?, 'outbound', ?, 'text', ?, ?, ?)
+                        """,
+                        (
+                            wa_id,
+                            (response.get("messages") or [{}])[0].get("id", ""),
+                            bubble,
+                            json.dumps(response, ensure_ascii=False),
+                            utc_now(),
+                        ),
+                    )
+                    conn.commit()
+
+                if interrupted:
+                    continue
+
+                record_batch_side_effects(conn, wa_id, profile_name, combined_text, memory_text, image_categories)
+            except Exception as exc:
+                log_outbound_error(conn, wa_id, "send_failed", exc)
+    finally:
+        conn.close()
+        with _reply_worker_states_lock:
+            state = _reply_worker_states.get(wa_id)
+            if state:
+                state["running"] = False
+
+
+def ensure_reply_worker_running(wa_id, profile_name=""):
+    should_start, _ = mark_reply_worker_dirty(wa_id, profile_name)
+    if should_start:
+        thread = threading.Thread(target=process_pending_replies_for_contact, args=(wa_id,), daemon=True)
+        thread.start()
 
 
 def generate_reply(conn, wa_id, profile_name, incoming_text, image_inputs=None, image_categories=None):
@@ -3580,6 +3779,7 @@ class Handler(BaseHTTPRequestHandler):
 
         conn = get_db()
         try:
+            dirty_contacts = {}
             for event in extract_text_messages(payload):
                 if has_processed_message(conn, event["message_id"]):
                     continue
@@ -3614,128 +3814,14 @@ class Handler(BaseHTTPRequestHandler):
                     """,
                     (event["wa_id"], event["profile_name"], utc_now()),
                 )
-                conn.commit()
-
-                if event["message_type"] not in ("text", "image"):
-                    continue
-
-                time.sleep(INBOUND_GRACE_SECONDS)
-
-                latest_inbound_id = get_latest_inbound_id(conn, event["wa_id"])
-                if latest_inbound_id != inbound_row_id:
-                    continue
-
-                pending_rows = load_pending_inbound_batch(conn, event["wa_id"], inbound_row_id)
-                if not pending_rows:
-                    continue
-
-                combined_text, memory_text = build_combined_user_input(pending_rows)
-                image_inputs = collect_image_inputs(pending_rows)
-                image_categories = classify_image_categories(combined_text, image_inputs)
-                if not combined_text and not image_inputs:
-                    continue
-
-                if memory_text:
-                    maybe_extract_memories(conn, event["wa_id"], event["profile_name"], memory_text)
-                if combined_text:
-                    maybe_extract_session_memories(conn, event["wa_id"], combined_text)
-                    # Check if message contains a reminder request
-                    try:
-                        _remind_at, _remind_content = parse_reminder(event["wa_id"], combined_text)
-                        if _remind_at and _remind_content:
-                            save_reminder(conn, event["wa_id"], _remind_at, _remind_content)
-                    except Exception:
-                        pass
-                if image_categories:
-                    bump_image_stats(conn, event["wa_id"], image_categories)
-                    conn.commit()
-
-                # ── Claude Code 模式（第二號碼專用）──────────────────────
-                reply_text = None
-                _skip_generate = False
-                last_body = clean_text(pending_rows[-1]["body"]) if pending_rows else (combined_text or "").strip()
-
-                if event["wa_id"] == CLAUDE_WA_ID and not image_inputs:
-                    run_claude_code_streaming(last_body, event["wa_id"])
-                    _skip_generate = True
-
-                if not _skip_generate:
-                    try:
-                        reply_text = generate_reply(
-                            conn,
-                            event["wa_id"],
-                            event["profile_name"],
-                            combined_text,
-                            image_inputs=image_inputs,
-                            image_categories=image_categories,
-                        )
-                    except Exception as exc:
-                        reply_text = "我啱啱個腦有啲卡住咗，等我緩一緩先再同你傾，好唔好？"
-                        conn.execute(
-                            """
-                            INSERT INTO wa_messages (wa_id, direction, message_id, message_type, body, raw_json, created_at)
-                            VALUES (?, 'outbound', '', 'error', ?, ?, ?)
-                            """,
-                            (
-                                event["wa_id"],
-                                f"model_failed: {exc}",
-                                json.dumps({"error": str(exc)}, ensure_ascii=False),
-                                utc_now(),
-                            ),
-                        )
-                        conn.commit()
-
-                if reply_text is None:
-                    continue
-
-                try:
-                    bubbles = split_reply_bubbles(reply_text, night_mode=is_night_mode())
-                    bubbles = maybe_stage_followup_bubbles(bubbles, night_mode=is_night_mode())
-                    # reaction on incoming message
-                    reaction_emoji = pick_susu_reaction(combined_text or "", night_mode=is_night_mode())
-                    if reaction_emoji and event.get("message_id"):
-                        try:
-                            send_whatsapp_reaction(event["wa_id"], event["message_id"], reaction_emoji)
-                        except Exception:
-                            pass
-                    quote_id = _smart_quote_id if "_smart_quote_id" in vars() else ""
-                    for index, bubble in enumerate(bubbles):
-                        if index == 0 and quote_id:
-                            response = send_whatsapp_quote(event["wa_id"], bubble, quote_id)
-                        else:
-                            response = send_whatsapp_text(event["wa_id"], bubble)
-                        conn.execute(
-                            """
-                            INSERT INTO wa_messages (wa_id, direction, message_id, message_type, body, raw_json, created_at)
-                            VALUES (?, 'outbound', ?, 'text', ?, ?, ?)
-                            """,
-                            (
-                                event["wa_id"],
-                                (response.get("messages") or [{}])[0].get("id", ""),
-                                bubble,
-                                json.dumps(response, ensure_ascii=False),
-                                utc_now(),
-                            ),
-                        )
-                        conn.commit()
-                        if index < len(bubbles) - 1:
-                            time.sleep(1.05)
-                except Exception as exc:
-                    conn.execute(
-                        """
-                        INSERT INTO wa_messages (wa_id, direction, message_id, message_type, body, raw_json, created_at)
-                        VALUES (?, 'outbound', '', 'error', ?, ?, ?)
-                        """,
-                        (
-                            event["wa_id"],
-                            f"send_failed: {exc}",
-                            json.dumps({"error": str(exc)}, ensure_ascii=False),
-                            utc_now(),
-                        ),
-                    )
-                    conn.commit()
+                if event["message_type"] in ("text", "image"):
+                    dirty_contacts[event["wa_id"]] = event["profile_name"]
+            conn.commit()
         finally:
             conn.close()
+
+        for wa_id, profile_name in dirty_contacts.items():
+            ensure_reply_worker_running(wa_id, profile_name)
 
         self._send_json({"ok": True})
 
