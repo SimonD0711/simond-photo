@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import base64
 import difflib
+import html
 import subprocess
 import shlex
 import json
@@ -12,11 +13,13 @@ import threading
 import textwrap
 import time
 from datetime import datetime, timedelta, timezone
+from email.utils import parsedate_to_datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.error import HTTPError
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, quote_plus, unquote, urlparse
 from urllib.request import Request, urlopen
+import xml.etree.ElementTree as ET
 
 try:
     from zoneinfo import ZoneInfo
@@ -87,6 +90,30 @@ TODAY_WEATHER_HINTS = ("今日", "今天", "而家", "依家", "宜家", "現在
 TOMORROW_WEATHER_HINTS = ("聽日", "听日", "明日", "明天", "tomorrow")
 DAY_AFTER_TOMORROW_WEATHER_HINTS = ("後日", "后日", "大後日", "大后日")
 HK_DEFAULT_LOCATION_HINTS = ("香港", "hk", "hong kong")
+EXPLICIT_SEARCH_HINTS = (
+    "幫我查", "幫我搵", "查下", "查吓", "查一查", "搜尋", "搜索",
+    "search", "lookup", "google", "上網", "網上", "online search",
+)
+NEWS_QUERY_KEYWORDS = (
+    "新聞", "news", "頭條", "headline", "最新消息", "最新新聞", "即時", "突發",
+)
+LIVE_TIME_HINTS = (
+    "最新", "而家", "依家", "宜家", "現在", "现在", "今日", "今天", "即時", "current", "today",
+)
+FACT_QUERY_HINTS = (
+    "係咪", "是嗎", "係唔係", "是不是", "有冇", "有沒有", "會唔會", "会不会",
+    "幾多", "多少", "幾時", "何時", "點樣", "如何", "邊個", "哪个", "誰", "谁", "？", "?",
+)
+LIVE_SEARCH_SUMMARIZER_PROMPT = textwrap.dedent(
+    """
+    你係一個即時搜尋結果整理器。
+    你只可以根據用戶提供嘅搜尋結果回答，唔好加入搜尋結果冇寫到嘅內容。
+    如果資料不足以直接下判斷，就坦白講「暫時見到嘅結果未夠準」，唔好亂估。
+    回覆用繁體港式廣東話，似 WhatsApp，但清楚準確優先。
+    如果內容同「今日 / 而家 / 最新」有關，盡量講清楚具體日期或者時間。
+    只輸出要發畀對方嘅回覆本身。
+    """
+).strip()
 
 SYSTEM_PERSONA = textwrap.dedent(
     """
@@ -433,7 +460,8 @@ def get_relay_model_order(now=None):
 
 
 def clean_text(value):
-    return re.sub(r"\s+", " ", (value or "").strip())
+    text = str(value or "").replace("\u200b", "").replace("\u200c", "").replace("\u200d", "").replace("\ufeff", "")
+    return re.sub(r"\s+", " ", text.strip())
 
 
 def fetch_json_url(url, timeout=15, headers=None):
@@ -643,6 +671,249 @@ def build_live_weather_reply(incoming_text):
     if update_time:
         pieces.append(f"預報資料係 {update_time} 更新")
     return "。".join(piece.strip("。") for piece in pieces if piece).strip("。") + "。"
+
+
+def should_do_live_search(text):
+    value = clean_text(text)
+    if not value or is_weather_query(value):
+        return False
+    if contains_any_keyword(value, EXPLICIT_SEARCH_HINTS):
+        return True
+    if contains_any_keyword(value, NEWS_QUERY_KEYWORDS):
+        return True
+    return contains_any_keyword(value, LIVE_TIME_HINTS) and contains_any_keyword(value, FACT_QUERY_HINTS)
+
+
+def is_news_query(text):
+    value = clean_text(text)
+    return contains_any_keyword(value, NEWS_QUERY_KEYWORDS)
+
+
+def extract_search_query(text, mode="web"):
+    value = clean_text(text)
+    patterns = [
+        r"^(?:蘇蘇|苏苏|bb|老婆|寶寶|宝宝)?\s*(?:可唔可以|可不可以|可以|你可唔可以|你可以)?\s*(?:幫我|同我)?\s*(?:上網)?\s*(?:查下|查吓|查一查|搵下|搵吓|搜尋|搜索|search|lookup|google)\s*",
+        r"^(?:蘇蘇|苏苏|bb|老婆|寶寶|宝宝)?\s*(?:幫我|同我)?\s*(?:睇下|睇睇)\s*",
+    ]
+    query = value
+    for pattern in patterns:
+        query = re.sub(pattern, "", query, flags=re.I)
+    if mode == "web":
+        for token in (
+            "而家", "依家", "宜家", "現在", "现在", "今日", "今天", "最新", "即時", "当前", "目前",
+            "係唔係", "是不是", "是嗎", "係咪", "會唔會", "会不会", "有冇", "有沒有", "幾多", "多少",
+            "點樣", "如何", "邊個", "哪个", "誰", "谁", "呢家", "而且", "可唔可以",
+        ):
+            query = query.replace(token, " ")
+    query = re.sub(r"[?？!！]+", " ", query)
+    query = re.sub(r"\s+", " ", query)
+    query = query.strip("，。！？!? ")
+    return query or value
+
+
+def build_news_search_query(query):
+    value = clean_text(query)
+    for token in ("今日", "今天", "最新", "即時", "頭條", "headline", "news", "新聞"):
+        value = value.replace(token, " ")
+    value = re.sub(r"\s+", " ", value).strip()
+    if not value:
+        value = clean_text(query)
+    if contains_any_keyword(query, LIVE_TIME_HINTS) or contains_any_keyword(query, NEWS_QUERY_KEYWORDS):
+        return f"{value} when:1d".strip()
+    return value
+
+
+def decode_duckduckgo_result_url(raw_url):
+    value = html.unescape(raw_url or "").strip()
+    if value.startswith("//"):
+        value = "https:" + value
+    parsed = urlparse(value)
+    if parsed.netloc.endswith("duckduckgo.com"):
+        target = parse_qs(parsed.query).get("uddg", [""])[0]
+        if target:
+            return html.unescape(unquote(target))
+    return value
+
+
+def result_source_label(url):
+    parsed = urlparse(url or "")
+    host = (parsed.netloc or "").lower()
+    host = re.sub(r"^www\.", "", host)
+    return host or "web"
+
+
+def parse_duckduckgo_results(html_text, limit=5):
+    pattern = re.compile(
+        r'<a[^>]*class="result__a"[^>]*href="([^"]+)"[^>]*>(.*?)</a>.*?<a[^>]*class="result__snippet"[^>]*>(.*?)</a>',
+        re.S,
+    )
+    results = []
+    for match in pattern.finditer(html_text or ""):
+        raw_url, raw_title, raw_snippet = match.groups()
+        title = clean_text(re.sub(r"<.*?>", " ", html.unescape(raw_title)))
+        snippet = clean_text(re.sub(r"<.*?>", " ", html.unescape(raw_snippet)))
+        url = decode_duckduckgo_result_url(raw_url)
+        if not title or not url:
+            continue
+        results.append(
+            {
+                "title": title,
+                "snippet": snippet,
+                "url": url,
+                "source": result_source_label(url),
+            }
+        )
+        if len(results) >= limit:
+            break
+    return results
+
+
+def search_duckduckgo_web(query, limit=5):
+    url = f"https://html.duckduckgo.com/html/?q={quote_plus(query)}"
+    request = Request(url, headers={"User-Agent": "Mozilla/5.0"}, method="GET")
+    with urlopen(request, timeout=20) as response:
+        raw_html = response.read().decode("utf-8", "ignore")
+    return parse_duckduckgo_results(raw_html, limit=limit)
+
+
+def parse_google_news_results(xml_text, limit=5):
+    root = ET.fromstring(xml_text)
+    results = []
+    for item in root.findall("./channel/item"):
+        title = clean_text(item.findtext("title"))
+        link = clean_text(item.findtext("link"))
+        published_raw = clean_text(item.findtext("pubDate"))
+        published_label = published_raw
+        if published_raw:
+            try:
+                published_dt = parsedate_to_datetime(published_raw).astimezone(HK_TZ)
+                published_label = published_dt.strftime("%Y-%m-%d %H:%M")
+            except Exception:
+                published_label = published_raw
+        source = ""
+        if " - " in title:
+            title_parts = title.rsplit(" - ", 1)
+            if len(title_parts) == 2:
+                title, source = title_parts
+        description = clean_text(re.sub(r"<.*?>", " ", html.unescape(item.findtext("description") or "")))
+        results.append(
+            {
+                "title": title,
+                "snippet": description,
+                "url": link,
+                "source": source or "Google News",
+                "published_at": published_label,
+            }
+        )
+        if len(results) >= limit:
+            break
+    return results
+
+
+def search_google_news(query, limit=5):
+    url = f"https://news.google.com/rss/search?q={quote_plus(query)}&hl=zh-HK&gl=HK&ceid=HK:zh-Hant"
+    request = Request(url, headers={"User-Agent": "Mozilla/5.0"}, method="GET")
+    with urlopen(request, timeout=20) as response:
+        xml_text = response.read().decode("utf-8", "ignore")
+    return parse_google_news_results(xml_text, limit=limit)
+
+
+def fallback_live_search_reply(query, mode, results):
+    if not results:
+        return "我啱啱上網幫你搵過，但暫時未見到夠清楚嘅結果，你想唔想我換個關鍵字再查？"
+    intro = "我幫你睇咗最新消息" if mode == "news" else "我啱啱上網幫你搵到"
+    lines = [intro]
+    for index, item in enumerate(results[:3], start=1):
+        source = clean_text(item.get("source"))
+        published_at = clean_text(item.get("published_at"))
+        title = clean_text(item.get("title"))
+        snippet = clean_text(item.get("snippet"))
+        extra_bits = []
+        if source:
+            extra_bits.append(source)
+        if published_at:
+            extra_bits.append(published_at)
+        extra_text = f"（{' / '.join(extra_bits)}）" if extra_bits else ""
+        line = f"{index}. {title}{extra_text}"
+        if snippet:
+            line += f"：{snippet[:80]}"
+        lines.append(line)
+    lines.append("如果你想，我可以再幫你追其中一條。")
+    return "\n".join(lines)
+
+
+def build_live_search_reply(incoming_text):
+    if not should_do_live_search(incoming_text):
+        return None
+
+    mode = "news" if is_news_query(incoming_text) else "web"
+    query = extract_search_query(incoming_text, mode=mode)
+    search_query = build_news_search_query(query) if mode == "news" else query
+    try:
+        if mode == "news":
+            results = cached_live_json(
+                ("google_news", search_query),
+                lambda: search_google_news(search_query, limit=5),
+                ttl_seconds=LIVE_LOOKUP_CACHE_SECONDS,
+            )
+        else:
+            results = cached_live_json(
+                ("duckduckgo_web", search_query),
+                lambda: search_duckduckgo_web(search_query, limit=5),
+                ttl_seconds=LIVE_LOOKUP_CACHE_SECONDS,
+            )
+    except Exception:
+        return "我啱啱上網查資料嗰下失敗咗，未夠把握就唔想亂答，你隔一陣再問我一次好唔好？"
+
+    if not results:
+        return "我啱啱上網幫你搵過，但暫時未見到夠準嘅結果，要唔要你換個講法我再查？"
+
+    search_lines = []
+    for index, item in enumerate(results[:5], start=1):
+        bits = [f"{index}. {clean_text(item.get('title'))}"]
+        if clean_text(item.get("source")):
+            bits.append(f"來源：{clean_text(item.get('source'))}")
+        if clean_text(item.get("published_at")):
+            bits.append(f"時間：{clean_text(item.get('published_at'))}")
+        if clean_text(item.get("snippet")):
+            bits.append(f"摘要：{clean_text(item.get('snippet'))}")
+        if clean_text(item.get("url")):
+            bits.append(f"連結：{clean_text(item.get('url'))}")
+        search_lines.append("\n".join(bits))
+
+    prompt = f"""
+用戶剛剛問：{clean_text(incoming_text)}
+實際搜尋關鍵字：{search_query}
+目前香港時間：{hk_now().strftime('%Y-%m-%d %H:%M')}
+搜尋模式：{"最新新聞" if mode == "news" else "網頁搜尋"}
+
+搜尋結果：
+{chr(10).join(search_lines)}
+
+回覆要求：
+- 先直接答用戶最想知嘅重點
+- 只可以根據以上搜尋結果內容
+- 如果結果未夠直接回答，就講暫時見到嘅結果未夠準
+- 用繁體港式廣東話，似自然 WhatsApp
+- 可以好短，但要完整
+- 唔好列太長，最多提 2 到 3 個最重要結果
+- 只輸出回覆本身
+""".strip()
+    try:
+        reply = shorten_whatsapp_reply(
+            generate_model_text(
+                prompt,
+                temperature=0.15,
+                max_tokens=220,
+                system_prompt=LIVE_SEARCH_SUMMARIZER_PROMPT,
+            ),
+            night_mode=is_night_mode(),
+        )
+        if reply:
+            return reply
+    except Exception:
+        pass
+    return fallback_live_search_reply(search_query, mode, results)
 
 
 def normalize_key(value):
@@ -3126,6 +3397,9 @@ def generate_reply(conn, wa_id, profile_name, incoming_text, image_inputs=None, 
     live_weather_reply = build_live_weather_reply(incoming_text)
     if live_weather_reply:
         return live_weather_reply
+    live_search_reply = build_live_search_reply(incoming_text)
+    if live_search_reply:
+        return live_search_reply
 
     if not (RELAY_API_KEY or GEMINI_API_KEY or MINIMAX_API_KEY or GROQ_API_KEY):
         return "我啱啱個腦有啲lag lag 地，等我緩一緩先再同你傾，好唔好？"
