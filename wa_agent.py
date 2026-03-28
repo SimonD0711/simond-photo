@@ -38,6 +38,7 @@ ACCESS_TOKEN = os.environ.get("WA_ACCESS_TOKEN", "")
 PHONE_NUMBER_ID = os.environ.get("WA_PHONE_NUMBER_ID", "")
 GRAPH_VERSION = os.environ.get("WA_GRAPH_VERSION", "v22.0")
 TYPING_INDICATOR_DELAY_SECONDS = float(os.environ.get("WA_TYPING_INDICATOR_DELAY_SECONDS", "0.5"))
+TYPING_INDICATOR_REFRESH_SECONDS = float(os.environ.get("WA_TYPING_INDICATOR_REFRESH_SECONDS", "4.0"))
 REPLY_JOB_POLL_SECONDS = float(os.environ.get("WA_REPLY_JOB_POLL_SECONDS", "0.05"))
 REPLY_JOB_TERMINATE_GRACE_SECONDS = float(os.environ.get("WA_REPLY_JOB_TERMINATE_GRACE_SECONDS", "0.25"))
 PROACTIVE_ENABLED = os.environ.get("WA_PROACTIVE_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"}
@@ -4421,21 +4422,28 @@ def process_pending_replies_for_contact(wa_id):
 
                 typing_stop = threading.Event()
 
-                def _maybe_send_typing(expected_version, expected_batch_id, expected_message_id):
-                    if typing_stop.wait(TYPING_INDICATOR_DELAY_SECONDS):
-                        return
+                def _typing_still_relevant(expected_version, expected_batch_id):
                     latest_version, _, _ = get_reply_worker_snapshot(wa_id)
                     if latest_version != expected_version:
+                        return False
+                    return get_latest_inbound_id_for_wa(wa_id) == expected_batch_id
+
+                def _maintain_typing_indicator(expected_version, expected_batch_id, expected_message_id):
+                    if typing_stop.wait(TYPING_INDICATOR_DELAY_SECONDS):
                         return
-                    if get_latest_inbound_id_for_wa(wa_id) != expected_batch_id:
-                        return
-                    try:
-                        send_whatsapp_typing_indicator(expected_message_id)
-                    except Exception:
-                        pass
+                    refresh_seconds = max(TYPING_INDICATOR_REFRESH_SECONDS, 0.5)
+                    while not typing_stop.is_set():
+                        if not _typing_still_relevant(expected_version, expected_batch_id):
+                            return
+                        try:
+                            send_whatsapp_typing_indicator(expected_message_id)
+                        except Exception:
+                            pass
+                        if typing_stop.wait(refresh_seconds):
+                            return
 
                 threading.Thread(
-                    target=_maybe_send_typing,
+                    target=_maintain_typing_indicator,
                     args=(target_version, batch_last_id, batch_last_message_id),
                     daemon=True,
                 ).start()
