@@ -1189,6 +1189,33 @@ def trim_search_snippet(text, max_length=110):
     return shortened + "…"
 
 
+def normalize_live_search_reply(reply):
+    text = str(reply or "").replace("\r\n", "\n").replace("\r", "\n").strip()
+    if not text:
+        return ""
+    lines = [clean_text(line) for line in text.split("\n") if clean_text(line)]
+    if not lines:
+        return ""
+
+    normalized_lines = []
+    for line in lines:
+        line = re.sub(r"^\s*[-*•]+\s*", "", line)
+        line = re.sub(r"^\s*\d+[.)、]\s*", "", line)
+        normalized_lines.append(line)
+
+    text = "\n".join(normalized_lines)
+    if len(normalized_lines) >= 3:
+        text = "；".join(normalized_lines).strip()
+    text = re.sub(r"([：:])\s*\n+", r"\1 ", text)
+    text = re.sub(r"\n{2,}", "\n", text)
+    text = text.strip()
+    if text.endswith(("：", ":")):
+        text = text[:-1].rstrip(" ，。；、")
+        if text:
+            text += "。"
+    return text
+
+
 def extract_named_work(text):
     value = clean_text(text)
     for pattern in (r"《([^》]{1,40})》", r"「([^」]{1,40})」", r"^([^-\|]{1,40})\s*-\s*[^-\|]+$"):
@@ -1324,17 +1351,19 @@ def build_live_search_reply(incoming_text):
 - 如果結果未夠直接回答，就講暫時見到嘅結果未夠準
 - 用繁體港式廣東話，似自然 WhatsApp
 - 可以好短，但要完整
-- 唔好列太長，最多提 2 到 3 個最重要結果
+- 唔好用逐行清單、項目符號，盡量用 1 到 2 句自然講完；如果真係要提幾個結果，都寫成同一句入面
+- 唔好用「見到嘅係：」之後另起多行但冇內容
 - 只輸出回覆本身
 """.strip()
     try:
         reply = shorten_whatsapp_reply(
+            normalize_live_search_reply(
             generate_model_text(
                 prompt,
                 temperature=0.15,
                 max_tokens=220,
                 system_prompt=build_live_search_system_prompt(),
-            ),
+            )),
             night_mode=is_night_mode(),
         )
         if reply:
@@ -3863,15 +3892,9 @@ def shorten_whatsapp_reply(reply, night_mode=False):
     if not text:
         return text
 
-    max_lines = 3 if night_mode else 2
     max_sentences = 3 if night_mode else 2
     max_len = 120 if night_mode else 72
     min_cut = 45 if night_mode else 30
-
-    lines = [line.strip() for line in text.split("\n") if line.strip()]
-    if len(lines) > max_lines:
-        lines = lines[:max_lines]
-    text = "\n".join(lines)
 
     sentences = re.split(r"(?<=[。！？!?~～…])\s*", text)
     sentences = [s.strip() for s in sentences if s.strip()]
