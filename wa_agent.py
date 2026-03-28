@@ -818,28 +818,39 @@ def search_google_news(query, limit=5):
     return parse_google_news_results(xml_text, limit=limit)
 
 
+def trim_search_snippet(text, max_length=110):
+    value = clean_text(text)
+    if len(value) <= max_length:
+        return value
+    shortened = value[:max_length].rstrip("，。；、,:; ")
+    return shortened + "…"
+
+
 def fallback_live_search_reply(query, mode, results):
     if not results:
         return "我啱啱上網幫你搵過，但暫時未見到夠清楚嘅結果，你想唔想我換個關鍵字再查？"
-    intro = "我幫你睇咗最新消息" if mode == "news" else "我啱啱上網幫你搵到"
-    lines = [intro]
-    for index, item in enumerate(results[:3], start=1):
-        source = clean_text(item.get("source"))
-        published_at = clean_text(item.get("published_at"))
-        title = clean_text(item.get("title"))
-        snippet = clean_text(item.get("snippet"))
-        extra_bits = []
-        if source:
-            extra_bits.append(source)
-        if published_at:
-            extra_bits.append(published_at)
-        extra_text = f"（{' / '.join(extra_bits)}）" if extra_bits else ""
-        line = f"{index}. {title}{extra_text}"
-        if snippet:
-            line += f"：{snippet[:80]}"
-        lines.append(line)
-    lines.append("如果你想，我可以再幫你追其中一條。")
-    return "\n".join(lines)
+    if mode == "news":
+        pieces = []
+        for item in results[:2]:
+            title = clean_text(item.get("title"))
+            source = clean_text(item.get("source"))
+            published_at = clean_text(item.get("published_at"))
+            meta = " / ".join(bit for bit in (source, published_at) if bit)
+            if meta:
+                pieces.append(f"{title}（{meta}）")
+            else:
+                pieces.append(title)
+        return "我幫你睇咗最新消息，而家比較近嘅有：" + "；".join(piece for piece in pieces if piece) + "。如果你想，我可以再幫你追其中一條。"
+
+    top = results[0]
+    source = clean_text(top.get("source"))
+    title = clean_text(top.get("title"))
+    snippet = trim_search_snippet(top.get("snippet"))
+    if snippet:
+        if contains_any_keyword(query, ("係唔係", "是不是", "會唔會", "有冇", "有沒有")):
+            return f"我啱啱上網睇到，{source or '第一個結果'} 上面寫緊：{snippet}。如果你想，我可以再幫你睇多一兩個來源。"
+        return f"我啱啱上網睇到，{title} 呢條結果最貼近你想問嘅嘢；摘要大概係：{snippet}。如果你想，我可以再幫你展開查。"
+    return f"我啱啱上網搵到最貼近嘅結果係 {title}。如果你想，我可以再幫你睇多幾個來源。"
 
 
 def build_live_search_reply(incoming_text):
