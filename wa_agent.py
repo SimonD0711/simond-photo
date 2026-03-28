@@ -2457,6 +2457,110 @@ def has_processed_message(conn, message_id):
     return bool(row)
 
 
+def parse_message_context(raw_payload):
+    payload = {}
+    if isinstance(raw_payload, dict):
+        payload = raw_payload
+    else:
+        try:
+            payload = json.loads(raw_payload or "{}")
+        except Exception:
+            payload = {}
+    context = payload.get("context") if isinstance(payload, dict) else {}
+    if not isinstance(context, dict):
+        context = {}
+    return {
+        "quoted_message_id": clean_text(context.get("id") or context.get("message_id")),
+        "quoted_from": clean_text(context.get("from")),
+    }
+
+
+def load_message_lookup_by_ids(conn, wa_id, message_ids):
+    cleaned_ids = []
+    seen = set()
+    for message_id in message_ids or []:
+        value = clean_text(message_id)
+        if not value or value in seen:
+            continue
+        seen.add(value)
+        cleaned_ids.append(value)
+    if not cleaned_ids:
+        return {}
+    placeholders = ",".join("?" for _ in cleaned_ids)
+    rows = conn.execute(
+        f"""
+        SELECT message_id, direction, message_type, body
+        FROM wa_messages
+        WHERE wa_id = ?
+          AND message_id IN ({placeholders})
+        """,
+        [wa_id, *cleaned_ids],
+    ).fetchall()
+    return {clean_text(row["message_id"]): dict(row) for row in rows}
+
+
+def format_quoted_message_preview(row, max_chars=48):
+    if not row:
+        return ""
+    speaker = "蘇蘇" if clean_text(row.get("direction")) == "outbound" else "對方"
+    body = clean_text(row.get("body", ""))
+    message_type = clean_text(row.get("message_type", ""))
+    if body:
+        preview = body
+    elif message_type == "image":
+        preview = "send 咗一張圖"
+    else:
+        preview = "一則較早訊息"
+    preview = preview.replace("\n", " ")
+    if len(preview) > max_chars:
+        preview = preview[:max_chars].rstrip() + "…"
+    return f"{speaker}：「{preview}」"
+
+
+def enrich_rows_with_quote_context(conn, wa_id, rows):
+    items = []
+    quoted_ids = []
+    for row in rows or []:
+        item = dict(row)
+        context = parse_message_context(item.get("raw_json") or item.get("raw") or {})
+        item.update(context)
+        quoted_message_id = clean_text(item.get("quoted_message_id"))
+        if quoted_message_id:
+            quoted_ids.append(quoted_message_id)
+        items.append(item)
+    quoted_lookup = load_message_lookup_by_ids(conn, wa_id, quoted_ids)
+    for item in items:
+        quoted_message_id = clean_text(item.get("quoted_message_id"))
+        if not quoted_message_id:
+            continue
+        quoted_row = quoted_lookup.get(quoted_message_id)
+        if quoted_row:
+            item["quoted_preview"] = format_quoted_message_preview(quoted_row)
+        else:
+            item["quoted_preview"] = "較早訊息"
+    return items
+
+
+def format_quote_context_suffix(item):
+    quoted_message_id = clean_text(item.get("quoted_message_id"))
+    if not quoted_message_id:
+        return ""
+    quoted_preview = clean_text(item.get("quoted_preview"))
+    if quoted_preview and quoted_preview != "較早訊息":
+        return f"（回覆 {quoted_preview}）"
+    return "（回覆較早訊息）"
+
+
+def format_quote_context_tag(item):
+    quoted_message_id = clean_text(item.get("quoted_message_id"))
+    if not quoted_message_id:
+        return ""
+    quoted_preview = clean_text(item.get("quoted_preview"))
+    if quoted_preview and quoted_preview != "較早訊息":
+        return f"[對方呢句係回覆緊 {quoted_preview}]"
+    return "[對方呢句係回覆緊一則較早訊息]"
+
+
 def mark_reply_worker_dirty(wa_id, profile_name=""):
     should_start = False
     with _reply_worker_states_lock:
@@ -2498,7 +2602,7 @@ def finish_reply_worker_if_idle(wa_id, observed_version):
 def load_recent_messages(conn, wa_id, limit=12):
     rows = conn.execute(
         """
-        SELECT direction, message_id, body, created_at
+        SELECT direction, message_id, message_type, body, raw_json, created_at
         FROM wa_messages
         WHERE wa_id = ?
         ORDER BY id DESC
@@ -2506,7 +2610,7 @@ def load_recent_messages(conn, wa_id, limit=12):
         """,
         (wa_id, limit),
     ).fetchall()
-    return list(reversed(rows))
+    return enrich_rows_with_quote_context(conn, wa_id, reversed(rows))
 
 
 def parse_iso_dt(value):
@@ -3144,12 +3248,16 @@ def upsert_session_memory(conn, wa_id, content, bucket="within_7d", ttl_hours=No
     return True
 
 
-def build_combined_user_input(rows):
+def build_combined_user_input(rows, conn=None, wa_id=""):
+    enriched_rows = enrich_rows_with_quote_context(conn, wa_id, rows) if conn and wa_id else [dict(row) for row in rows]
     lines = []
     text_only_lines = []
-    for row in rows:
+    for row in enriched_rows:
         message_type = row.get("message_type", "")
         body = clean_text(row.get("body", ""))
+        quote_tag = format_quote_context_tag(row)
+        if quote_tag:
+            lines.append(quote_tag)
         if message_type == "text":
             if body:
                 lines.append(body)
@@ -3809,7 +3917,7 @@ def build_proactive_prompt(conn, wa_id, profile_name, now=None):
         speaker = "對方" if item["direction"] == "inbound" else "蘇蘇"
         body = clean_text(item["body"])
         if body:
-            history_lines.append(f"{speaker}: {body}")
+            history_lines.append(f"{speaker}{format_quote_context_suffix(item)}: {body}")
 
     dynamic_memories = build_filtered_long_term_memory_lines(load_memories(conn, wa_id), primary_text, limit=20)
     within_24h_memories = format_session_memory_lines(conn, wa_id, "within_24h", limit=4)
@@ -4394,7 +4502,7 @@ def build_prompt(conn, wa_id, profile_name, incoming_text, image_inputs=None, im
         except Exception:
             time_label = ""
         label = f"[{time_label}] " if time_label else ""
-        history_lines.append(f"{label}{speaker}: {body}")
+        history_lines.append(f"{label}{speaker}{format_quote_context_suffix(item)}: {body}")
         if item["direction"] == "inbound" and msg_id and len(body) > 3:
             quotable.append((msg_id, body[:40]))
 
@@ -4713,7 +4821,7 @@ def process_pending_replies_for_contact(wa_id):
                     return
                 continue
 
-            combined_text, memory_text = build_combined_user_input(pending_rows)
+            combined_text, memory_text = build_combined_user_input(pending_rows, conn=conn, wa_id=wa_id)
             image_inputs = collect_image_inputs(pending_rows)
             if not combined_text and not image_inputs:
                 if finish_reply_worker_if_idle(wa_id, target_version):
