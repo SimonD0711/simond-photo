@@ -426,11 +426,11 @@
 
     <section class="panel">
       <h1>苏苏記憶管理</h1>
-      <p>直接管理目前 WhatsApp 版苏苏主號的真實資料庫：長期記憶 <code>wa_memories</code>、短期記憶 <code>wa_session_memories</code>、歸檔記憶 <code>wa_memory_archive</code>、提醒事項 <code>wa_reminders</code>，以及苏苏自身設定 <code>wa_susu_settings</code>。</p>
+      <p>直接管理目前 WhatsApp 版苏苏號主的真實資料庫：長期記憶 <code>wa_memories</code>、短期記憶 <code>wa_session_memories</code>、歸檔記憶 <code>wa_memory_archive</code>、提醒事項 <code>wa_reminders</code>，以及苏苏自身設定 <code>wa_susu_settings</code>。</p>
       <div class="status-note" id="status-note">正在讀取記憶資料...</div>
       <div class="summary-grid">
         <div class="summary-card">
-          <div class="summary-label">主號</div>
+          <div class="summary-label">號主</div>
           <div class="summary-value" id="stat-contact">—</div>
           <div class="summary-sub" id="stat-contact-sub">未選擇</div>
         </div>
@@ -458,7 +458,6 @@
     </section>
 
     <div class="toolbar">
-      <select id="contact-select"></select>
       <input class="grow" id="search-input" type="search" placeholder="搜尋內容、類型、提醒文字...">
       <button class="primary" id="new-btn" type="button">＋ 新增長期記憶</button>
       <button id="refresh-btn" type="button">↻ 刷新</button>
@@ -487,7 +486,7 @@
       <p id="edit-modal-desc">直接修改 <code>wa_memories</code> 的內容，儲存後即時生效。</p>
       <input type="hidden" id="edit-id">
       <div class="modal-field">
-        <label>聯絡人</label>
+        <label>號主</label>
         <input type="text" id="edit-wa" readonly>
       </div>
       <div class="modal-field">
@@ -527,7 +526,7 @@
       <p>可直接修改提醒時間與內容，儲存後即時寫回 <code>wa_reminders</code>。</p>
       <input type="hidden" id="reminder-id">
       <div class="modal-field">
-        <label>聯絡人</label>
+        <label>號主</label>
         <input type="text" id="reminder-wa" readonly>
       </div>
       <div class="modal-field">
@@ -550,11 +549,7 @@
   <div class="modal" id="new-modal">
     <div class="modal-card">
       <h2>新增長期記憶</h2>
-      <p>為指定聯絡人新增一條可長期保留的記憶。</p>
-      <div class="modal-field">
-        <label>聯絡人</label>
-        <select id="new-wa"></select>
-      </div>
+      <p>為號主新增一條可長期保留的記憶。</p>
       <div class="modal-field">
         <label>類型</label>
         <select id="new-kind">
@@ -578,7 +573,7 @@
 <script>
   const API = '';
   const TABS = {
-    long: { key: 'long_term_memories', label: '長期記憶', text: '長期記憶：主號的補充長期記憶，應避免重複核心檔案' },
+    long: { key: 'long_term_memories', label: '長期記憶', text: '長期記憶：號主的補充長期記憶，應避免重複核心檔案' },
     session: { key: 'session_memories', label: '短期記憶', text: '短期記憶：24 小時 / 3 天 / 1 週內的時間分層記憶' },
     archive: { key: 'archived_memories', label: '歸檔記憶', text: '歸檔記憶：7 天後轉入，只在追問舊事時調取' },
     reminder: { key: 'reminders', label: '提醒事項', text: '提醒事項：等待觸發或已觸發的提醒' },
@@ -587,7 +582,7 @@
   const SETTINGS_GROUPS = [
     {
       title: '人設與核心記憶',
-      desc: '這兩段會直接影響苏苏對主號的 system prompt 與長期背景理解。Primary User Memory 會在儲存時自動壓成較精簡的核心檔案。',
+      desc: '這兩段會直接影響苏苏對號主的 system prompt 與長期背景理解。Primary User Memory 會在儲存時自動壓成較精簡的核心檔案。',
       className: 'full',
       fields: [
         { key: 'system_persona', label: 'System Persona', type: 'textarea', rows: 12, hint: '控制苏苏的身份、語氣、口吻和回覆風格。' },
@@ -678,7 +673,6 @@
   const loginErr = document.getElementById('login-err');
   const statusNote = document.getElementById('status-note');
   const entriesGrid = document.getElementById('entries-grid');
-  const contactSelect = document.getElementById('contact-select');
   const searchInput = document.getElementById('search-input');
   const sectionMeta = document.getElementById('section-meta');
 
@@ -781,10 +775,10 @@
         <span class="entry-key character">全局設定</span>
         ${badgeHtml(`最後更新：${updatedAt}`)}
       </div>
-      <p>這裡改的是苏苏主號專用設定。儲存後會寫回 <code>wa_susu_settings</code>，大約 5 秒內由 <code>wa_agent.py</code> 自動讀到新值，並且長期記憶會自動避開和核心檔案重複的內容。</p>
+      <p>這裡改的是苏苏號主專用設定。儲存後會寫回 <code>wa_susu_settings</code>，大約 5 秒內由 <code>wa_agent.py</code> 自動讀到新值，並且長期記憶會自動避開和核心檔案重複的內容。</p>
     </div>
     <div class="settings-actions">
-      <button id="settings-dedupe-btn" type="button">清理主號重複長期記憶</button>
+      <button id="settings-dedupe-btn" type="button">清理號主重複長期記憶</button>
       <button id="settings-reset-btn" type="button">重新載入</button>
       <button class="primary" id="settings-save-btn" type="button">儲存設定</button>
     </div>
@@ -814,17 +808,6 @@
     document.getElementById('stat-archive-sub').textContent = `${stats.archive_count || 0} 條已歸檔 · 7 天後永久保留`;
     document.getElementById('stat-reminder').textContent = String(stats.reminder_count || 0);
     document.getElementById('stat-reminder-sub').textContent = `${stats.pending_reminder_count || 0} 條未觸發`;
-  }
-
-  function renderContacts() {
-    const contacts = payload?.contacts || [];
-    if (!contacts.length) {
-      contactSelect.innerHTML = '<option value="">尚無聯絡人</option>';
-      return;
-    }
-    contactSelect.innerHTML = contacts.map(item =>
-      `<option value="${esc(item.wa_id)}"${item.wa_id === payload.selected_wa_id ? ' selected' : ''}>${esc(item.display_name)} · ${esc(item.wa_id)}</option>`
-    ).join('');
   }
 
   function badgeHtml(label, extraClass = '') {
@@ -914,7 +897,6 @@
 
   function refreshToolbarState() {
     const isSettings = activeTab === 'settings';
-    contactSelect.disabled = isSettings;
     searchInput.disabled = isSettings;
     searchInput.placeholder = isSettings ? '苏苏設定頁不支援搜尋' : '搜尋內容、類型、提醒文字...';
   }
@@ -927,7 +909,7 @@
       dedupeBtn.addEventListener('click', dedupePrimaryLongTermMemories);
     }
     if (reloadBtn) {
-      reloadBtn.addEventListener('click', () => loadMemory(contactSelect.value));
+      reloadBtn.addEventListener('click', () => loadMemory());
     }
     if (saveBtn) {
       saveBtn.addEventListener('click', saveSettings);
@@ -949,7 +931,7 @@
       entriesGrid.innerHTML = `<div class="empty-state">這個分頁暫時沒有資料</div>`;
       return;
     }
-    entriesGrid.innerHTML = items.map(renderEntry).join('');
+      entriesGrid.innerHTML = items.map(renderEntry).join('');
     document.querySelectorAll('.edit-btn').forEach(btn =>
       btn.addEventListener('click', () => openEdit(Number(btn.dataset.id))));
     document.querySelectorAll('.delete-btn').forEach(btn =>
@@ -963,7 +945,6 @@
     try {
       const suffix = waId ? `?wa_id=${encodeURIComponent(waId)}` : '';
       payload = await apiFetch(`/api/admin/susu-memory${suffix}`);
-      renderContacts();
       renderSummary();
       renderEntries();
       statusNote.textContent = `資料更新於 ${fmt(payload.checked_at)}`;
@@ -1017,16 +998,15 @@
         method: 'POST',
         body: JSON.stringify({}),
       });
-      await loadMemory(contactSelect.value);
-      statusNote.textContent = `主號重複長期記憶已清理：移除 ${result.removed_count || 0} 條 · ${fmt(new Date().toISOString())}`;
+      await loadMemory();
+      statusNote.textContent = `號主重複長期記憶已清理：移除 ${result.removed_count || 0} 條 · ${fmt(new Date().toISOString())}`;
     } catch (e) {
       if (err) err.textContent = e.message;
     }
   }
 
-  contactSelect.addEventListener('change', () => loadMemory(contactSelect.value));
   searchInput.addEventListener('input', () => { searchText = searchInput.value; renderEntries(); });
-  document.getElementById('refresh-btn').addEventListener('click', () => loadMemory(contactSelect.value));
+  document.getElementById('refresh-btn').addEventListener('click', () => loadMemory());
 
   [['tab-long', 'long'], ['tab-session', 'session'], ['tab-archive', 'archive'], ['tab-reminder', 'reminder'], ['tab-settings', 'settings']].forEach(([id, tab]) => {
     document.getElementById(id).addEventListener('click', () => {
@@ -1144,16 +1124,11 @@
   });
 
   const newModal = document.getElementById('new-modal');
-  const newWa = document.getElementById('new-wa');
   const newKind = document.getElementById('new-kind');
   const newContent = document.getElementById('new-content');
   const newErr = document.getElementById('new-err');
 
   document.getElementById('new-btn').addEventListener('click', () => {
-    const contacts = payload?.contacts || [];
-    newWa.innerHTML = contacts.map(item =>
-      `<option value="${esc(item.wa_id)}"${item.wa_id === payload?.selected_wa_id ? ' selected' : ''}>${esc(item.display_name)} · ${esc(item.wa_id)}</option>`
-    ).join('');
     newKind.value = 'manual';
     newContent.value = '';
     newErr.textContent = '';
@@ -1164,17 +1139,17 @@
   document.getElementById('new-cancel').addEventListener('click', () => newModal.classList.remove('is-open'));
   document.getElementById('new-save').addEventListener('click', async () => {
     newErr.textContent = '';
-    if (!newWa.value || !newKind.value.trim() || !newContent.value.trim()) {
-      newErr.textContent = '請填寫聯絡人、類型與內容';
+    if (!newKind.value.trim() || !newContent.value.trim()) {
+      newErr.textContent = '請填寫類型與內容';
       return;
     }
     try {
       await apiFetch('/api/admin/susu-memory/create', {
         method: 'POST',
-        body: JSON.stringify({ wa_id: newWa.value, kind: newKind.value.trim(), content: newContent.value }),
+        body: JSON.stringify({ kind: newKind.value.trim(), content: newContent.value }),
       });
       newModal.classList.remove('is-open');
-      await loadMemory(newWa.value);
+      await loadMemory();
     } catch (e) {
       newErr.textContent = e.message;
     }
