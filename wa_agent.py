@@ -1748,26 +1748,18 @@ def split_reply_bubbles(reply_text, night_mode=False):
     if not text:
         return []
 
-    max_bubbles = 4 if night_mode else 3
-    if len(text) < 26:
-        return [text]
-
     chunks = [chunk.strip() for chunk in re.split(r"\n+", text) if chunk.strip()]
     if len(chunks) >= 2:
-        return chunks[:max_bubbles]
+        return chunks
 
     parts = re.findall(
-        r".+?(?:[。！？!?…]+(?:[🥺😭😂😏🤭💕💖💗💘🫶✨😤🤍❤️💛💚💙💜🩷🩵]*\s*)|$)",
+        r".+?(?:[。！？!?~～…]+(?:[🥺😭😂😏🤭💕💖💗💘🫶✨😤🤍❤️💛💚💙💜🩷🩵]*\s*)|$)",
         text,
     )
     sentences = [part.strip() for part in parts if part.strip()]
     if len(sentences) <= 1:
         return [text]
-    if len(sentences) <= max_bubbles:
-        return sentences
-    head = sentences[: max_bubbles - 1]
-    tail = " ".join(sentences[max_bubbles - 1 :]).strip()
-    return head + ([tail] if tail else [])
+    return sentences
 
 
 def split_followup_style(bubble):
@@ -3891,14 +3883,6 @@ def shorten_whatsapp_reply(reply, night_mode=False):
     text = normalize_reply(reply)
     if not text:
         return text
-
-    max_sentences = 3 if night_mode else 2
-
-    sentences = re.split(r"(?<=[。！？!?~～…])\s*", text)
-    sentences = [s.strip() for s in sentences if s.strip()]
-    if len(sentences) > max_sentences:
-        text = " ".join(sentences[:max_sentences]).strip()
-
     return text
 
 
