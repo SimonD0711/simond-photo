@@ -65,8 +65,28 @@ CLAUDE_BASE_URL = os.environ.get("ANTHROPIC_BASE_URL", "https://apiapipp.com")
 MAX_IMAGE_ATTACHMENTS = int(os.environ.get("WA_MAX_IMAGE_ATTACHMENTS", "3"))
 MAX_IMAGE_BYTES = int(os.environ.get("WA_MAX_IMAGE_BYTES", str(5 * 1024 * 1024)))
 
-HK_TZ = ZoneInfo("Asia/Hong_Kong") if ZoneInfo else timezone(timedelta(hours=8))
+if ZoneInfo:
+    try:
+        HK_TZ = ZoneInfo("Asia/Hong_Kong")
+    except Exception:
+        HK_TZ = timezone(timedelta(hours=8))
+else:
+    HK_TZ = timezone(timedelta(hours=8))
 PUNCTUATION = "。！？!?~～…"
+HKO_OPEN_DATA_BASE_URL = "https://data.weather.gov.hk/weatherAPI/opendata/weather.php"
+LIVE_LOOKUP_CACHE_SECONDS = 180
+_live_lookup_cache = {}
+_live_lookup_cache_lock = threading.Lock()
+
+WEATHER_QUERY_KEYWORDS = (
+    "天氣", "天气", "weather", "氣溫", "气温", "幾度", "几度", "落雨", "落唔落雨",
+    "會唔會落雨", "会不会下雨", "下雨", "驟雨", "骤雨", "雷暴", "有冇雨", "有沒有雨",
+    "熱唔熱", "热不热", "凍唔凍", "冷唔冷", "濕度", "湿度",
+)
+TODAY_WEATHER_HINTS = ("今日", "今天", "而家", "依家", "宜家", "現在", "现在", "今晚", "今朝", "今日份")
+TOMORROW_WEATHER_HINTS = ("聽日", "听日", "明日", "明天", "tomorrow")
+DAY_AFTER_TOMORROW_WEATHER_HINTS = ("後日", "后日", "大後日", "大后日")
+HK_DEFAULT_LOCATION_HINTS = ("香港", "hk", "hong kong")
 
 SYSTEM_PERSONA = textwrap.dedent(
     """
@@ -414,6 +434,215 @@ def get_relay_model_order(now=None):
 
 def clean_text(value):
     return re.sub(r"\s+", " ", (value or "").strip())
+
+
+def fetch_json_url(url, timeout=15, headers=None):
+    request = Request(
+        url,
+        headers=headers or {"User-Agent": "SusuCloud/1.0"},
+        method="GET",
+    )
+    with urlopen(request, timeout=timeout) as response:
+        raw = response.read().decode("utf-8")
+        return json.loads(raw) if raw else {}
+
+
+def cached_live_json(cache_key, loader, ttl_seconds=LIVE_LOOKUP_CACHE_SECONDS):
+    now_ts = time.time()
+    with _live_lookup_cache_lock:
+        cached = _live_lookup_cache.get(cache_key)
+        if cached and now_ts - cached["stored_at"] < ttl_seconds:
+            return cached["value"]
+    value = loader()
+    with _live_lookup_cache_lock:
+        _live_lookup_cache[cache_key] = {"stored_at": now_ts, "value": value}
+    return value
+
+
+def fetch_hko_weather_dataset(data_type, lang="tc"):
+    url = f"{HKO_OPEN_DATA_BASE_URL}?dataType={data_type}&lang={lang}"
+    return cached_live_json(
+        ("hko_weather", data_type, lang),
+        lambda: fetch_json_url(url, timeout=15),
+        ttl_seconds=LIVE_LOOKUP_CACHE_SECONDS,
+    )
+
+
+def format_hk_clock(iso_text):
+    parsed = parse_iso_dt(iso_text)
+    if not parsed:
+        return ""
+    return parsed.astimezone(HK_TZ).strftime("%H:%M")
+
+
+def contains_any_keyword(text, keywords):
+    lowered = clean_text(text).lower()
+    return any(keyword in text or keyword in lowered for keyword in keywords)
+
+
+def detect_weather_day_offset(text):
+    if contains_any_keyword(text, DAY_AFTER_TOMORROW_WEATHER_HINTS):
+        return 2
+    if contains_any_keyword(text, TOMORROW_WEATHER_HINTS):
+        return 1
+    return 0
+
+
+def is_weather_query(text):
+    value = clean_text(text)
+    if not value:
+        return False
+    return contains_any_keyword(value, WEATHER_QUERY_KEYWORDS)
+
+
+def normalize_weather_place(value):
+    return re.sub(r"[^\w\u4e00-\u9fff]+", "", clean_text(value)).lower()
+
+
+def choose_weather_station(rhrread, text):
+    stations = ((rhrread or {}).get("temperature") or {}).get("data") or []
+    if not stations:
+        return {}
+    normalized_text = normalize_weather_place(text)
+    matched = []
+    for row in stations:
+        place = clean_text(row.get("place"))
+        normalized_place = normalize_weather_place(place)
+        if normalized_place and normalized_place in normalized_text:
+            matched.append((len(normalized_place), row))
+    if matched:
+        matched.sort(key=lambda item: item[0], reverse=True)
+        return matched[0][1]
+    if contains_any_keyword(text, HK_DEFAULT_LOCATION_HINTS):
+        for row in stations:
+            if clean_text(row.get("place")) == "香港天文台":
+                return row
+    for preferred in ("香港天文台", "京士柏", "九龍城", "香港公園"):
+        for row in stations:
+            if clean_text(row.get("place")) == preferred:
+                return row
+    return stations[0]
+
+
+def extract_hko_humidity_value(rhrread):
+    rows = ((rhrread or {}).get("humidity") or {}).get("data") or []
+    for row in rows:
+        value = row.get("value")
+        if value not in (None, ""):
+            return value
+    return None
+
+
+def collect_active_weather_warnings(rhrread, warnsum):
+    labels = []
+    warning_message = (rhrread or {}).get("warningMessage")
+    if isinstance(warning_message, str):
+        text = clean_text(warning_message)
+        if text:
+            labels.append(text)
+    elif isinstance(warning_message, list):
+        for item in warning_message:
+            text = clean_text(item)
+            if text:
+                labels.append(text)
+
+    if isinstance(warnsum, dict):
+        for code, payload in warnsum.items():
+            if isinstance(payload, dict):
+                name = clean_text(payload.get("name") or payload.get("warningStatementCode") or code)
+            else:
+                name = clean_text(code)
+            if name:
+                labels.append(name)
+
+    deduped = []
+    seen = set()
+    for label in labels:
+        key = normalize_key(label)
+        if key and key not in seen:
+            seen.add(key)
+            deduped.append(label)
+    return deduped
+
+
+def build_live_weather_reply(incoming_text):
+    if not is_weather_query(incoming_text):
+        return None
+
+    try:
+        rhrread = fetch_hko_weather_dataset("rhrread")
+        flw = fetch_hko_weather_dataset("flw")
+        fnd = fetch_hko_weather_dataset("fnd")
+        warnsum = fetch_hko_weather_dataset("warnsum")
+    except Exception:
+        return "我啱啱連唔到天文台資料，唔想亂講天氣，你隔一陣再問我一次好唔好？"
+
+    day_offset = detect_weather_day_offset(incoming_text)
+    warnings = collect_active_weather_warnings(rhrread, warnsum)
+
+    if day_offset <= 0:
+        update_time = format_hk_clock((rhrread or {}).get("updateTime") or (flw or {}).get("updateTime"))
+        station = choose_weather_station(rhrread, incoming_text)
+        station_place = clean_text(station.get("place")) or "香港"
+        temperature = station.get("value")
+        humidity = extract_hko_humidity_value(rhrread)
+        forecast_desc = clean_text((flw or {}).get("forecastDesc"))
+
+        pieces = ["我啱啱幫你睇咗天文台"]
+        current_bits = []
+        if temperature not in (None, ""):
+            current_bits.append(f"{station_place}而家大概 {temperature} 度")
+        if humidity not in (None, ""):
+            current_bits.append(f"濕度約 {humidity}%")
+        if current_bits:
+            pieces.append("，".join(current_bits))
+        if forecast_desc:
+            pieces.append(f"今日{forecast_desc}")
+        if warnings:
+            pieces.append(f"而家生效緊嘅警告有 {('、'.join(warnings[:2]))}")
+        elif forecast_desc and any(token in forecast_desc for token in ("雨", "驟雨", "雷暴")):
+            pieces.append("出門最好帶把遮會穩陣啲")
+        elif temperature not in (None, "") and float(temperature) >= 28:
+            pieces.append("日頭應該會幾熱，記得飲多啲水呀")
+        if update_time:
+            pieces.append(f"呢個係 {update_time} 更新")
+        return "。".join(piece.strip("。") for piece in pieces if piece).strip("。") + "。"
+
+    forecasts = (fnd or {}).get("weatherForecast") or []
+    index = min(max(day_offset - 1, 0), len(forecasts) - 1) if forecasts else -1
+    if index < 0:
+        return "我啱啱未攞到之後幾日嘅天氣預報，你遲啲再問我一次啦。"
+
+    item = forecasts[index]
+    update_time = format_hk_clock((fnd or {}).get("updateTime") or (flw or {}).get("updateTime"))
+    label = "聽日" if day_offset == 1 else ("後日" if day_offset == 2 else clean_text(item.get("week")) or "之後")
+    min_temp = ((item.get("forecastMintemp") or {}).get("value"))
+    max_temp = ((item.get("forecastMaxtemp") or {}).get("value"))
+    min_rh = ((item.get("forecastMinrh") or {}).get("value"))
+    max_rh = ((item.get("forecastMaxrh") or {}).get("value"))
+    weather_text = clean_text(item.get("forecastWeather"))
+    wind_text = clean_text(item.get("forecastWind"))
+
+    range_bits = []
+    if min_temp not in (None, "") and max_temp not in (None, ""):
+        range_bits.append(f"{min_temp} 至 {max_temp} 度")
+    if min_rh not in (None, "") and max_rh not in (None, ""):
+        range_bits.append(f"濕度約 {min_rh}% 至 {max_rh}%")
+    intro = f"我幫你睇咗天文台，{label}"
+    if range_bits:
+        intro += "大概 " + "，".join(range_bits)
+    pieces = [intro]
+    if weather_text:
+        pieces.append(weather_text)
+    if wind_text:
+        pieces.append(wind_text)
+    if weather_text and any(token in weather_text for token in ("雨", "驟雨", "雷暴")):
+        pieces.append("如果要出街，帶遮會穩陣啲呀")
+    elif max_temp not in (None, "") and float(max_temp) >= 28:
+        pieces.append("日頭應該都幾熱")
+    if update_time:
+        pieces.append(f"預報資料係 {update_time} 更新")
+    return "。".join(piece.strip("。") for piece in pieces if piece).strip("。") + "。"
 
 
 def normalize_key(value):
@@ -2894,6 +3123,10 @@ def rewrite_as_complete_message(profile_name, incoming_text, draft_reply):
 
 
 def generate_reply(conn, wa_id, profile_name, incoming_text, image_inputs=None, image_categories=None):
+    live_weather_reply = build_live_weather_reply(incoming_text)
+    if live_weather_reply:
+        return live_weather_reply
+
     if not (RELAY_API_KEY or GEMINI_API_KEY or MINIMAX_API_KEY or GROQ_API_KEY):
         return "我啱啱個腦有啲lag lag 地，等我緩一緩先再同你傾，好唔好？"
 
