@@ -4916,11 +4916,6 @@ def process_pending_replies_for_contact(wa_id):
             typing_stop = None
 
             if batch_last_message_id:
-                try:
-                    send_whatsapp_mark_as_read(batch_last_message_id)
-                except Exception:
-                    pass
-
                 typing_stop = threading.Event()
 
                 def _typing_still_relevant(expected_version, expected_batch_id):
