@@ -1,6 +1,6 @@
 # Susu Cloud Local Ops Handoff
 
-Last updated: 2026-03-28 20:18 HKT
+Last updated: 2026-03-31 03:05 HKT
 
 ## Workspace
 
@@ -20,39 +20,51 @@ Last updated: 2026-03-28 20:18 HKT
 - Production runtime files:
   - `/var/www/html/wa_agent.py`
   - `/var/www/html/api_server.py`
+  - `/var/www/html/susu_admin_core.py`
+  - `/var/www/html/susu_admin_server.py`
   - `/var/www/html/susu-memory-admin.html`
 - Production services:
   - `wa-agent.service`
   - `cheungchau-api.service`
+  - `susu-admin-api.service`
+  - `sillytavern-bridge.service`
+  - `susu-brain-backend.service`
 
 ## Production Status
 
-Checked on 2026-03-28 20:13 HKT:
+Checked on 2026-03-31 03:05 HKT:
 
 - `wa-agent.service` = `active`
 - `cheungchau-api.service` = `active`
+- `susu-admin-api.service` = `active`
+- `sillytavern-bridge.service` = `active`
+- `susu-brain-backend.service` = `active`
 - `http://127.0.0.1:9100/health` currently shows:
-  - `primary_model = claude-opus-4-6`
-  - `fallback_model = ""`
-  - `proactive_enabled = true`
-  - `proactive_scan_seconds = 300`
-  - `proactive_min_silence_minutes = 45`
-  - `proactive_cooldown_minutes = 180`
+  - `brain_provider = sillytavern`
+  - `bridge_brain_enabled = true`
+- `http://127.0.0.1:9102/health` currently shows:
+  - `service = susu_brain_bridge`
+  - `upstream_mode = agnai`
+- `http://127.0.0.1:9103/health` currently shows:
+  - `service = susu_brain_backend`
 
 ## Current Runtime Notes
 
-- Susu normal chat is locked to `claude-opus-4-6`
-- Tokyo service-environment probe was re-verified on 2026-03-28:
-  - `generate_model_text("Reply with ok only.") -> "ok"`
-- Reply generation is handled through a reply worker plus cancellable subprocess
-- Typing indicator now refreshes periodically while generation is still active
+- Susu production chat now runs through:
+  - `wa_agent.py -> sillytavern_bridge_server.py -> susu_brain_backend.py -> relay`
+- The backend model is still `claude-opus-4-6`, but the shell now uses the bridge-backed provider
+- Reply generation is still handled through a reply worker plus cancellable subprocess
+- Typing indicator still refreshes periodically while generation is active
+- Susu admin API is now fully split from the photo API:
+  - Susu admin: `127.0.0.1:9001`, `susu-admin-api.service`
+  - Photo admin/site API: `127.0.0.1:9000`, `cheungchau-api.service`
 
 ## Recent Local Commits
 
-- `a4b5fc2` `Update handoff backup retention note`
-- `e165c70` `Add local Susu handoff note`
-- `71b648e` `Keep WhatsApp typing indicator alive`
-- `005c201` `Harden generic live search grounding`
+- `dff992c` `Extract Susu admin core from photo API`
+- `d810083` `Tighten clue handling and backend retries`
+- `1a30dcc` `Add local Susu brain backend service`
+- `9c0dcfd` `Add Agnai-style backend bridge adapter`
 
 ## Backup Retention
 
@@ -86,9 +98,12 @@ If continuing Susu runtime work:
 2. Run local `python -m py_compile wa_agent.py`
 3. Backup the target file on Tokyo before upload
 4. Upload changed file(s) to `/var/www/html/`
-5. Restart:
-   - `wa-agent.service`
-   - `cheungchau-api.service`
+5. Restart only the affected services:
+   - runtime / chat: `wa-agent.service`
+   - photo admin/site API: `cheungchau-api.service`
+   - Susu admin API: `susu-admin-api.service`
+   - bridge: `sillytavern-bridge.service`
+   - brain backend: `susu-brain-backend.service`
 6. Verify:
    - `systemctl is-active`
    - `curl -s http://127.0.0.1:9100/health`
@@ -97,10 +112,18 @@ If continuing Susu runtime work:
 
 - Runtime logic:
   - `C:\Users\ding7\Documents\gpt-susu-cloud\wa_agent.py`
-- Admin API:
+- Photo/admin API:
   - `C:\Users\ding7\Documents\gpt-susu-cloud\api_server.py`
+- Susu admin core:
+  - `C:\Users\ding7\Documents\gpt-susu-cloud\susu_admin_core.py`
+- Susu admin API:
+  - `C:\Users\ding7\Documents\gpt-susu-cloud\susu_admin_server.py`
 - Admin UI:
   - `C:\Users\ding7\Documents\gpt-susu-cloud\susu-memory-admin.html`
+- Brain bridge:
+  - `C:\Users\ding7\Documents\gpt-susu-cloud\sillytavern_bridge_server.py`
+- Brain backend:
+  - `C:\Users\ding7\Documents\gpt-susu-cloud\susu_brain_backend.py`
 
 ## Git Note
 

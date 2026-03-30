@@ -1,6 +1,6 @@
 # Susu WhatsApp Agent Handoff For Claude Code
 
-Last updated: 2026-03-30 HKT
+Last updated: 2026-03-31 HKT
 
 ## 1. Project Background
 
@@ -33,7 +33,7 @@ Because of that, the current recommended direction is:
 
 - keep the WhatsApp runtime shell
 - gradually swap or augment the chat brain
-- current exploration target: a switchable SillyTavern-based brain layer
+- current production target is now a bridge-backed pure backend brain, not a browser-bound SillyTavern frontend
 
 ## 2. Main Workspace
 
@@ -42,11 +42,15 @@ Because of that, the current recommended direction is:
 - Current branch:
   - `codex/susu-cloud`
 - Current local commit:
-  - `caee46d`
+  - check `git log --oneline -1`
 - Main runtime file:
   - `C:\Users\ding7\Documents\gpt-susu-cloud\wa_agent.py`
-- Admin API:
+- Photo/admin API:
   - `C:\Users\ding7\Documents\gpt-susu-cloud\api_server.py`
+- Susu admin core:
+  - `C:\Users\ding7\Documents\gpt-susu-cloud\susu_admin_core.py`
+- Susu admin API:
+  - `C:\Users\ding7\Documents\gpt-susu-cloud\susu_admin_server.py`
 - Admin UI:
   - `C:\Users\ding7\Documents\gpt-susu-cloud\susu-memory-admin.html`
 
@@ -69,6 +73,8 @@ Authoritative production files:
 
 - `/var/www/html/wa_agent.py`
 - `/var/www/html/api_server.py`
+- `/var/www/html/susu_admin_core.py`
+- `/var/www/html/susu_admin_server.py`
 - `/var/www/html/susu-memory-admin.html`
 
 Operational expectations for code changes:
@@ -80,6 +86,9 @@ Operational expectations for code changes:
 5. restart:
    - `wa-agent.service`
    - `cheungchau-api.service`
+   - `susu-admin-api.service`
+   - `sillytavern-bridge.service`
+   - `susu-brain-backend.service`
 
 Do not assume any other worktree is the authority runtime.
 
@@ -183,11 +192,11 @@ The runtime can:
 
 ### Active default brain
 
-Normal chat currently still uses:
+Normal chat currently runs through a bridge-backed pure backend path:
 
-- `claude-opus-4-6`
+- `wa_agent.py -> sillytavern_bridge_server.py -> susu_brain_backend.py -> relay`
 
-The shell around the model is more mature than the model orchestration itself.
+The backend model is still `claude-opus-4-6`, but production no longer depends on a browser/frontend bridge.
 
 ### Current weakness
 
@@ -213,7 +222,7 @@ Instead:
 - make the "brain" switchable
 - first target brain integration: SillyTavern
 
-## 7. New SillyTavern Brain Scaffold
+## 7. New Bridge-Backed Brain Scaffold
 
 This work has already started locally.
 
@@ -222,26 +231,32 @@ Relevant files:
 - `C:\Users\ding7\Documents\gpt-susu-cloud\wa_agent.py`
 - `C:\Users\ding7\Documents\gpt-susu-cloud\sillytavern_adapter.py`
 - `C:\Users\ding7\Documents\gpt-susu-cloud\sillytavern_bridge_server.py`
+- `C:\Users\ding7\Documents\gpt-susu-cloud\agnai_backend_adapter.py`
 - `C:\Users\ding7\Documents\gpt-susu-cloud\susu_brain_backend.py`
 - `C:\Users\ding7\Documents\gpt-susu-cloud\susu-brain-backend.service`
 - `C:\Users\ding7\Documents\gpt-susu-cloud\sillytavern-bridge.service`
 - `C:\Users\ding7\Documents\gpt-susu-cloud\SILLYTAVERN_BRIDGE.md`
+- `C:\Users\ding7\Documents\gpt-susu-cloud\susu_admin_core.py`
+- `C:\Users\ding7\Documents\gpt-susu-cloud\susu_admin_server.py`
 
-Current local commit:
+Recent commits in this area:
 
-- `caee46d` `Add switchable SillyTavern brain scaffold`
-- `bbb7796` `Organize structured context handoff changes`
+- `dff992c` `Extract Susu admin core from photo API`
+- `d810083` `Tighten clue handling and backend retries`
+- `1a30dcc` `Add local Susu brain backend service`
+- `9c0dcfd` `Add Agnai-style backend bridge adapter`
 
 What was added:
 
 - a new switchable `brain provider` concept
 - a minimal HTTP adapter for a bridge-backed brain endpoint
-- a guarded path so only ordinary text chat is eligible for SillyTavern
+- a guarded path so only ordinary text chat is eligible for the bridge-backed provider
 - fallback to the legacy Opus path if SillyTavern fails
-- a structured multi-turn context payload builder for the SillyTavern path
+- a structured multi-turn context payload builder for the bridge path
 - a local bridge server that exposes an OpenAI-style `/v1/chat/completions` endpoint
 - a bridge service file so Tokyo can run the bridge as a separate process
 - a local pure backend service that accepts Agnai-style structured payloads and calls the relay model
+- a fully separate Susu admin service so photo API and Susu admin no longer share one codepath
 
 New env vars already supported in code:
 
@@ -266,10 +281,12 @@ New env vars already supported in code:
 - `WA_SUSU_BRAIN_TIMEOUT_SECONDS`
 - `WA_SUSU_BRAIN_MODEL`
 
-Current default behavior:
+Current production behavior:
 
-- still `legacy`
-- no production behavior changes unless the provider is explicitly switched
+- Tokyo currently runs `brain_provider = sillytavern`
+- operationally this means “bridge-backed backend provider”, not a browser-bound SillyTavern frontend
+- the bridge upstream mode is `agnai`
+- the backend service is local and pure-server-side
 
 Current gating logic for SillyTavern path:
 
@@ -301,9 +318,26 @@ It can sit in front of:
 
 SQLite remains the single runtime source of truth. The backend is expected to consume structured context only, and must not take ownership of `wa_messages`, `wa_reminders`, or other business tables.
 
+### 7.2 Current admin split
+
+The photo/admin API and Susu admin API are now split:
+
+- Photo/admin API:
+  - service: `cheungchau-api.service`
+  - file: `api_server.py`
+  - bind: `127.0.0.1:9000`
+  - nginx path: generic `/api/*`
+- Susu admin API:
+  - service: `susu-admin-api.service`
+  - files: `susu_admin_core.py`, `susu_admin_server.py`
+  - bind: `127.0.0.1:9001`
+  - nginx path: `/api/susu-admin/*`
+
+Do not re-mix these layers unless there is a very strong reason.
+
 ## 8. Why Not Replace The Whole Runtime
 
-SillyTavern should not replace the entire system.
+The bridge-backed backend should not replace the entire system.
 
 Reasons:
 
@@ -413,25 +447,15 @@ Priority order:
 
 ### Phase 1
 
-Finish the SillyTavern bridge path for ordinary text chat.
-
-Specifically:
-
-- define the exact bridge protocol
-- confirm the target endpoint
-- validate payload/response shape
-- test with local `WA_BRAIN_PROVIDER=sillytavern`
+Continue improving task-state and memory relevance in the production pure backend path.
 
 ### Phase 2
 
-Add a context payload builder specifically for the SillyTavern brain.
-
-The current scaffold still sends a prompt-like payload.
-This should become more structured over time.
+Keep tightening structured runtime context so both `legacy` and bridge-backed provider consume the same middle layer.
 
 ### Phase 3
 
-Improve state tracking for implicit tasks.
+Improve state tracking for implicit tasks and quoted short answers.
 
 Examples:
 
@@ -444,7 +468,7 @@ Examples:
 
 Add STT / TTS without disturbing the runtime shell.
 
-### Phase 5
+### Phase 4
 
 Optionally make proactive and reminder content generation use the new brain after ordinary chat is stable.
 
@@ -470,11 +494,11 @@ Optionally make proactive and reminder content generation use the new brain afte
 
 Recommended immediate handoff task:
 
-- continue the SillyTavern migration in a safe phase-1 way
-- keep current runtime behavior unchanged by default
-- make ordinary text chat switchable to a SillyTavern bridge endpoint
-- add a more explicit structured payload builder instead of sending the full prompt as a single user string
-- keep automatic fallback to legacy Opus replies
+- continue improving the bridge-backed pure backend path in a safe way
+- keep current WhatsApp runtime behavior stable
+- improve task-state handling and memory selection before adding any new UI entrypoints
+- keep structured runtime context shared across providers
+- preserve automatic fallback behavior
 
 If more specificity is needed, the first implementation target should be:
 
