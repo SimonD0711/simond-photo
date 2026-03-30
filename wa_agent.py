@@ -23,6 +23,7 @@ from urllib.error import HTTPError
 from urllib.parse import parse_qs, quote_plus, unquote, urlparse
 from urllib.request import Request, urlopen
 import xml.etree.ElementTree as ET
+from sillytavern_adapter import SillyTavernAdapterError, call_sillytavern_chat
 
 try:
     from zoneinfo import ZoneInfo
@@ -42,6 +43,12 @@ TYPING_INDICATOR_DELAY_SECONDS = float(os.environ.get("WA_TYPING_INDICATOR_DELAY
 TYPING_INDICATOR_REFRESH_SECONDS = float(os.environ.get("WA_TYPING_INDICATOR_REFRESH_SECONDS", "4.0"))
 REPLY_JOB_POLL_SECONDS = float(os.environ.get("WA_REPLY_JOB_POLL_SECONDS", "0.05"))
 REPLY_JOB_TERMINATE_GRACE_SECONDS = float(os.environ.get("WA_REPLY_JOB_TERMINATE_GRACE_SECONDS", "0.25"))
+BRAIN_PROVIDER = os.environ.get("WA_BRAIN_PROVIDER", "legacy").strip().lower() or "legacy"
+BRAIN_FALLBACK_ON_ERROR = os.environ.get("WA_BRAIN_FALLBACK_ON_ERROR", "1").strip().lower() not in {"0", "false", "no", "off"}
+SILLYTAVERN_API_URL = os.environ.get("WA_SILLYTAVERN_API_URL", "").strip()
+SILLYTAVERN_API_KEY = os.environ.get("WA_SILLYTAVERN_API_KEY", "").strip()
+SILLYTAVERN_MODEL = os.environ.get("WA_SILLYTAVERN_MODEL", "").strip()
+SILLYTAVERN_TIMEOUT_SECONDS = float(os.environ.get("WA_SILLYTAVERN_TIMEOUT_SECONDS", "90"))
 PROACTIVE_ENABLED = os.environ.get("WA_PROACTIVE_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"}
 PROACTIVE_SCAN_SECONDS = int(os.environ.get("WA_PROACTIVE_SCAN_SECONDS", "300"))
 PROACTIVE_MIN_SILENCE_MINUTES = int(os.environ.get("WA_PROACTIVE_MIN_SILENCE_MINUTES", "45"))
@@ -4714,6 +4721,58 @@ def build_prompt(conn, wa_id, profile_name, incoming_text, image_inputs=None, im
 """.strip()
 
 
+def should_use_sillytavern_brain(wa_id, incoming_text, image_inputs=None):
+    if BRAIN_PROVIDER != "sillytavern":
+        return False
+    if not SILLYTAVERN_API_URL:
+        return False
+    if image_inputs:
+        return False
+    if wa_id == CLAUDE_WA_ID:
+        return False
+    if build_live_search_plan(incoming_text).get("should_search"):
+        return False
+    return True
+
+
+def build_sillytavern_request_payload(conn, wa_id, profile_name, incoming_text, image_inputs=None, image_categories=None):
+    prompt = build_prompt(
+        conn,
+        wa_id,
+        profile_name,
+        incoming_text,
+        image_inputs=image_inputs,
+        image_categories=image_categories,
+    )
+    payload = {
+        "messages": [
+            {"role": "user", "content": prompt},
+        ],
+        "temperature": 0.8,
+        "max_tokens": 220,
+    }
+    if SILLYTAVERN_MODEL:
+        payload["model"] = SILLYTAVERN_MODEL
+    return payload
+
+
+def generate_sillytavern_reply(conn, wa_id, profile_name, incoming_text, image_inputs=None, image_categories=None):
+    payload = build_sillytavern_request_payload(
+        conn,
+        wa_id,
+        profile_name,
+        incoming_text,
+        image_inputs=image_inputs,
+        image_categories=image_categories,
+    )
+    return call_sillytavern_chat(
+        SILLYTAVERN_API_URL,
+        SILLYTAVERN_API_KEY,
+        payload,
+        timeout=max(SILLYTAVERN_TIMEOUT_SECONDS, 5.0),
+    )
+
+
 def is_emoji_base_char(char):
     if not char:
         return False
@@ -5215,7 +5274,8 @@ def generate_reply(conn, wa_id, profile_name, incoming_text, image_inputs=None, 
     if live_search_reply:
         return live_search_reply
 
-    if not RELAY_API_KEY:
+    use_sillytavern = should_use_sillytavern_brain(wa_id, incoming_text, image_inputs=image_inputs)
+    if not RELAY_API_KEY and not use_sillytavern:
         return "我啱啱個腦有啲lag lag 地，等我緩一緩先再同你傾，好唔好？"
 
     now = hk_now()
@@ -5237,15 +5297,34 @@ def generate_reply(conn, wa_id, profile_name, incoming_text, image_inputs=None, 
     if sleep_boundary:
         effective_text = clean_text(incoming_text) + "\n[記住：對方講過夜晚唔鍾意被催瞓，除非佢主動叫你哄佢瞓。]"
 
-    reply = shorten_whatsapp_reply(
-        generate_model_text(
+    try:
+        if use_sillytavern:
+            primary_reply = generate_sillytavern_reply(
+                conn,
+                wa_id,
+                profile_name,
+                effective_text,
+                image_inputs=image_inputs,
+                image_categories=image_categories,
+            )
+        else:
+            primary_reply = generate_model_text(
+                build_prompt(conn, wa_id, profile_name, effective_text, image_inputs=image_inputs, image_categories=image_categories),
+                temperature=temperature,
+                max_tokens=max_tokens,
+                image_inputs=image_inputs,
+            )
+    except SillyTavernAdapterError:
+        if not BRAIN_FALLBACK_ON_ERROR:
+            raise
+        primary_reply = generate_model_text(
             build_prompt(conn, wa_id, profile_name, effective_text, image_inputs=image_inputs, image_categories=image_categories),
             temperature=temperature,
             max_tokens=max_tokens,
             image_inputs=image_inputs,
-        ),
-        night_mode=night_mode,
-    )
+        )
+
+    reply = shorten_whatsapp_reply(primary_reply, night_mode=night_mode)
 
     if sleep_boundary and contains_sleep_nag(reply) and not any(item in clean_text(incoming_text) for item in ["瞓", "訓", "睡", "讲故事", "講故事", "哄我"]):
         rewrite_prompt = f"""
@@ -5325,6 +5404,8 @@ class Handler(BaseHTTPRequestHandler):
                     "time_mode": "night" if is_night_mode() else "day",
                     "time_profile": get_time_profile(),
                     "timezone": "Asia/Hong_Kong",
+                    "brain_provider": BRAIN_PROVIDER,
+                    "sillytavern_enabled": bool(SILLYTAVERN_API_URL),
                     "primary_model": relay_primary if RELAY_API_KEY else "",
                     "fallback_model": "",
                     "has_relay_key": bool(RELAY_API_KEY),
