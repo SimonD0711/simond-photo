@@ -559,7 +559,7 @@
   </div>
 
 <script>
-  const API = '';
+  const API = '/api/susu-admin';
   const TABS = {
     long: { key: 'long_term_memories', label: '長期記憶', text: '長期記憶：號主的補充長期記憶，應避免重複核心檔案' },
     session: { key: 'session_memories', label: '短期記憶', text: '短期記憶：24 小時 / 3 天 / 1 週內的時間分層記憶' },
@@ -657,7 +657,7 @@
 
   async function checkAuth() {
     try {
-      const s = await apiFetch('/api/admin/status');
+      const s = await apiFetch('/status');
       if (!s.authenticated) {
         loginOverlay.style.display = 'flex';
         return;
@@ -675,7 +675,7 @@
   loginBtn.addEventListener('click', async () => {
     loginErr.textContent = '';
     try {
-      const s = await apiFetch('/api/admin/login', {
+      const s = await apiFetch('/login', {
         method: 'POST',
         body: JSON.stringify({ password: loginPw.value }),
       });
@@ -693,7 +693,7 @@
 
   loginPw.addEventListener('keydown', e => { if (e.key === 'Enter') loginBtn.click(); });
   logoutBtn.addEventListener('click', async () => {
-    await apiFetch('/api/admin/logout', { method: 'POST' });
+    await apiFetch('/logout', { method: 'POST' });
     location.reload();
   });
 
@@ -923,7 +923,7 @@
     statusNote.textContent = '正在讀取目前 WhatsApp 版苏苏的資料...';
     try {
       const suffix = waId ? `?wa_id=${encodeURIComponent(waId)}` : '';
-      payload = await apiFetch(`/api/admin/susu-memory${suffix}`);
+      payload = await apiFetch(`/memory${suffix}`);
       renderSummary();
       renderEntries();
       statusNote.textContent = `資料更新於 ${fmt(payload.checked_at)}`;
@@ -958,7 +958,7 @@
     const err = document.getElementById('settings-err');
     if (err) err.textContent = '';
     try {
-      await apiFetch('/api/admin/susu-settings/update', {
+      await apiFetch('/settings/update', {
         method: 'POST',
         body: JSON.stringify({ settings: collectSettingsForm() }),
       });
@@ -973,7 +973,7 @@
     const err = document.getElementById('settings-err');
     if (err) err.textContent = '';
     try {
-      const result = await apiFetch('/api/admin/susu-memory/deduplicate', {
+      const result = await apiFetch('/memory/deduplicate', {
         method: 'POST',
         body: JSON.stringify({}),
       });
@@ -1017,7 +1017,7 @@
   document.getElementById('edit-save').addEventListener('click', async () => {
     editErr.textContent = '';
     try {
-      await apiFetch('/api/admin/susu-memory/update', {
+      await apiFetch('/memory/update', {
         method: 'POST',
         body: JSON.stringify({ id: Number(editId.value), content: editContent.value }),
       });
@@ -1046,7 +1046,7 @@
   document.getElementById('delete-confirm').addEventListener('click', async () => {
     deleteErr.textContent = '';
     try {
-      await apiFetch('/api/admin/susu-memory/delete', {
+      await apiFetch('/memory/delete', {
         method: 'POST',
         body: JSON.stringify({ id: Number(deleteId.value), type: deleteType.value }),
       });
@@ -1084,7 +1084,7 @@
       return;
     }
     try {
-      await apiFetch('/api/admin/susu-memory/update', {
+      await apiFetch('/memory/update', {
         method: 'POST',
         body: JSON.stringify({
           id: Number(reminderId.value),
@@ -1119,7 +1119,7 @@
       return;
     }
     try {
-      await apiFetch('/api/admin/susu-memory/create', {
+      await apiFetch('/memory/create', {
         method: 'POST',
         body: JSON.stringify({ content: newContent.value }),
       });
