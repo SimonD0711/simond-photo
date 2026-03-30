@@ -221,10 +221,14 @@ Relevant files:
 
 - `C:\Users\ding7\Documents\gpt-susu-cloud\wa_agent.py`
 - `C:\Users\ding7\Documents\gpt-susu-cloud\sillytavern_adapter.py`
+- `C:\Users\ding7\Documents\gpt-susu-cloud\sillytavern_bridge_server.py`
+- `C:\Users\ding7\Documents\gpt-susu-cloud\sillytavern-bridge.service`
+- `C:\Users\ding7\Documents\gpt-susu-cloud\SILLYTAVERN_BRIDGE.md`
 
 Current local commit:
 
 - `caee46d` `Add switchable SillyTavern brain scaffold`
+- `bbb7796` `Organize structured context handoff changes`
 
 What was added:
 
@@ -232,6 +236,9 @@ What was added:
 - a minimal HTTP adapter for a SillyTavern bridge endpoint
 - a guarded path so only ordinary text chat is eligible for SillyTavern
 - fallback to the legacy Opus path if SillyTavern fails
+- a structured multi-turn context payload builder for the SillyTavern path
+- a local bridge server that exposes an OpenAI-style `/v1/chat/completions` endpoint
+- a bridge service file so Tokyo can run the bridge as a separate process
 
 New env vars already supported in code:
 
@@ -241,6 +248,15 @@ New env vars already supported in code:
 - `WA_SILLYTAVERN_API_KEY`
 - `WA_SILLYTAVERN_MODEL`
 - `WA_SILLYTAVERN_TIMEOUT_SECONDS`
+- `WA_ST_BRIDGE_HOST`
+- `WA_ST_BRIDGE_PORT`
+- `WA_ST_BRIDGE_API_KEY`
+- `WA_ST_BRIDGE_UPSTREAM_MODE`
+- `WA_ST_BRIDGE_UPSTREAM_URL`
+- `WA_ST_BRIDGE_UPSTREAM_API_KEY`
+- `WA_ST_BRIDGE_UPSTREAM_MODEL`
+- `WA_ST_BRIDGE_TIMEOUT_SECONDS`
+- `WA_ST_BRIDGE_UPSTREAM_AUTH_HEADER`
 
 Current default behavior:
 
@@ -255,6 +271,25 @@ Current gating logic for SillyTavern path:
 - not Claude Code special-route traffic
 
 This is intentionally conservative for phase 1.
+
+### 7.1 Current bridge contract
+
+The current Phase 2 bridge contract is:
+
+- `wa_agent.py` sends OpenAI-style chat payloads to `WA_SILLYTAVERN_API_URL`
+- the bridge accepts:
+  - `POST /v1/chat/completions`
+  - `POST /chat/completions`
+- the bridge returns an OpenAI-style response with:
+  - `choices[0].message.content`
+
+The bridge is intentionally generic.
+
+It can sit in front of:
+
+- SillyTavern ChatBridge
+- another OpenAI-compatible backend
+- a future custom structured-chat service
 
 ## 8. Why Not Replace The Whole Runtime
 
