@@ -23,7 +23,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, quote_plus, unquote, urlparse
 from urllib.request import Request, urlopen
 import xml.etree.ElementTree as ET
-from sillytavern_adapter import SillyTavernAdapterError, call_sillytavern_chat
+from brain_adapter import BrainBridgeError, call_brain_bridge
 
 try:
     from zoneinfo import ZoneInfo
@@ -45,10 +45,13 @@ REPLY_JOB_POLL_SECONDS = float(os.environ.get("WA_REPLY_JOB_POLL_SECONDS", "0.05
 REPLY_JOB_TERMINATE_GRACE_SECONDS = float(os.environ.get("WA_REPLY_JOB_TERMINATE_GRACE_SECONDS", "0.25"))
 BRAIN_PROVIDER = os.environ.get("WA_BRAIN_PROVIDER", "legacy").strip().lower() or "legacy"
 BRAIN_FALLBACK_ON_ERROR = os.environ.get("WA_BRAIN_FALLBACK_ON_ERROR", "1").strip().lower() not in {"0", "false", "no", "off"}
-SILLYTAVERN_API_URL = os.environ.get("WA_SILLYTAVERN_API_URL", "").strip()
-SILLYTAVERN_API_KEY = os.environ.get("WA_SILLYTAVERN_API_KEY", "").strip()
-SILLYTAVERN_MODEL = os.environ.get("WA_SILLYTAVERN_MODEL", "").strip()
-SILLYTAVERN_TIMEOUT_SECONDS = float(os.environ.get("WA_SILLYTAVERN_TIMEOUT_SECONDS", "90"))
+BRAIN_BRIDGE_URL = os.environ.get("WA_BRAIN_BRIDGE_URL", "").strip()
+BRAIN_BRIDGE_KEY = os.environ.get("WA_BRAIN_BRIDGE_KEY", "").strip()
+BRAIN_BRIDGE_MODEL = os.environ.get("WA_BRAIN_BRIDGE_MODEL", "").strip()
+BRAIN_BRIDGE_TIMEOUT = float(os.environ.get("WA_BRAIN_BRIDGE_TIMEOUT", "90"))
+# Per-task model overrides — both default to BRAIN_BRIDGE_MODEL when unset.
+_BRAIN_MODEL_COMPLEX = os.environ.get("WA_BRAIN_MODEL_COMPLEX", "").strip()
+_BRAIN_MODEL_CASUAL = os.environ.get("WA_BRAIN_MODEL_CASUAL", "").strip()
 RELAY_RETRY_COUNT = int(os.environ.get("WA_RELAY_RETRY_COUNT", "2"))
 RELAY_RETRY_BACKOFF_SECONDS = float(os.environ.get("WA_RELAY_RETRY_BACKOFF_SECONDS", "1.0"))
 PROACTIVE_ENABLED = os.environ.get("WA_PROACTIVE_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"}
@@ -322,7 +325,13 @@ MEMORY_EXTRACTOR_PROMPT = textwrap.dedent(
     """
     你係一個記憶抽取器，只負責由聊天中抽取值得長期記住嘅穩定資訊。
     只輸出 JSON array。
-    每一項都要係一句短短嘅繁體中文。
+    每一項都要係 object，格式：{"content":"...", "importance": 1-5}
+    importance 評分標準：
+      5 = 核心身份資訊（姓名、學校、主修、工作、住處）
+      4 = 重要偏好或長期習慣（飲食偏好、常用工具、重要關係）
+      3 = 一般背景資訊（興趣、喜歡的作品、常去的地方）
+      2 = 次要細節（偶爾提到的事、可能隨時間改變的小事）
+      1 = 幾乎冇長期價值
     如果冇值得記低嘅內容，就輸出 []。
     唔好輸出任何額外解釋。
     """
@@ -373,6 +382,9 @@ RECENT_TASK_HINTS = (
     "有課", "上課", "上堂", "開會", "开会", "presentation", "report", "deadline", "due",
     "要交", "要做", "要完成", "要去", "要返", "要上", "交功課", "交作業", "交报告", "交報告",
     "功課", "作業", "報告", "报告", "pre",
+    "quiz", "quizzes", "exam", "exams", "test", "assignment", "assignments",
+    "lab", "tutorial", "lecture",
+    "考試", "測驗", "測試",
 )
 RECENT_ACTION_HINTS = (
     "食", "飲", "玩", "返", "翻", "去", "到", "忙", "chur", "病", "唔舒服", "訓", "瞓",
@@ -399,6 +411,8 @@ ARCHIVE_SEARCH_MARKERS = (
     "食", "飲", "玩", "返", "翻", "去", "到", "忙", "病", "唔舒服", "瞓", "訓",
     "上堂", "上課", "有課", "開會", "开会", "報告", "报告", "功課", "作業",
     "影", "拍", "睇", "買", "server", "claude", "chatgpt", "攝影", "相",
+    "quiz", "quizzes", "exam", "exams", "test", "assignment",
+    "考試", "測驗", "測試",
 )
 ARCHIVE_CJK_STOP_CHARS = set("我你妳佢他她的咗左咩乜呀啊啦喇呢嗎吗吧有係系去到同埋又都就會想要過返翻")
 
@@ -669,19 +683,44 @@ def contains_any_keyword(text, keywords):
     return any(keyword in text or keyword in lowered for keyword in keywords)
 
 
-def detect_weather_day_offset(text):
-    if contains_any_keyword(text, DAY_AFTER_TOMORROW_WEATHER_HINTS):
-        return 2
-    if contains_any_keyword(text, TOMORROW_WEATHER_HINTS):
-        return 1
-    return 0
+def maybe_extract_qa_turn_memory(conn, wa_id, history_rows):
+    """Synthesize recent Q&A interaction into session memory."""
+    if len(history_rows) < 2:
+        return
+    # Look for a User Question -> Assistant Answer pair
+    latest = history_rows[-2:]
+    if latest[0]["direction"] != "inbound" or latest[1]["direction"] != "outbound":
+        return
+    
+    question = clean_text(latest[0]["body"])
+    answer = clean_text(latest[1]["body"])
+    
+    if len(question) < 6 or len(answer) < 4:
+        return
+    
+    # Heuristic: only store if it feels like a meaningful knowledge exchange
+    content = f"Q: {question} A: {answer}"
+    if len(content) > 80:
+        content = content[:77] + "..."
+        
+    # Check if this Q&A is already covered in recent memories to avoid flooding
+    if memory_already_exists(conn, wa_id, content):
+        return
+
+    upsert_session_memory(conn, wa_id, content, bucket="within_24h")
+    conn.commit()
 
 
-def is_weather_query(text):
-    value = clean_text(text)
-    if not value:
-        return False
-    return contains_any_keyword(value, WEATHER_QUERY_KEYWORDS)
+def memory_already_exists(conn, wa_id, content):
+    # Check recent session memories for high similarity
+    rows = conn.execute(
+        "SELECT content FROM wa_session_memories WHERE wa_id = ? AND expires_at > ? LIMIT 5",
+        (wa_id, hk_now().isoformat())
+    ).fetchall()
+    for row in rows:
+        if normalize_key(row["content"]) == normalize_key(content):
+            return True
+    return False
 
 
 def normalize_weather_place(value):
@@ -2226,6 +2265,7 @@ def get_db():
     ensure_column(conn, "wa_session_memories", "observed_at", "observed_at TEXT NOT NULL DEFAULT ''")
     ensure_column(conn, "wa_memories", "memory_key", "memory_key TEXT NOT NULL DEFAULT ''")
     ensure_column(conn, "wa_memories", "created_at", "created_at TEXT NOT NULL DEFAULT ''")
+    ensure_column(conn, "wa_memories", "importance", "importance INTEGER NOT NULL DEFAULT 3")
     conn.execute("UPDATE wa_memories SET created_at = updated_at WHERE created_at = ''")
     normalize_recent_memory_rows(conn)
     conn.execute(
@@ -2936,9 +2976,23 @@ def should_lookup_archive(text):
     value = clean_text(text)
     if not value:
         return False
-    if not any(marker in value for marker in ARCHIVE_LOOKUP_TIME_MARKERS):
-        return False
-    return any(marker in value for marker in MEMORY_RECALL_MARKERS + ARCHIVE_SEARCH_MARKERS)
+    # Primary path: past-time anchor + recall/search marker (existing behaviour)
+    if any(marker in value for marker in ARCHIVE_LOOKUP_TIME_MARKERS):
+        return any(marker in value for marker in MEMORY_RECALL_MARKERS + ARCHIVE_SEARCH_MARKERS)
+    # Secondary path: forward-schedule education query (e.g. "下星期仲有冇quiz")
+    # Archive can surface recurring schedule patterns stored from previous conversations.
+    lowered = value.lower()
+    has_forward_time = any(m in value for m in (
+        "下星期", "下周", "下禮拜", "下礼拜", "下個星期", "下个星期",
+        "下個禮拜", "下个礼拜", "聽日", "听日", "明日", "明天", "明早",
+        "呢星期", "今個星期", "本周", "本週", "今周",
+    ))
+    has_edu = any(kw in lowered for kw in (
+        "quiz", "quizzes", "exam", "exams", "test", "assignment",
+        "考試", "測驗", "測試", "功課", "作業", "上堂", "上課", "有課", "deadline",
+    ))
+    has_q = "有冇" in value or "有没有" in value or "有無" in value or "?" in value or "？" in value
+    return has_forward_time and has_edu and has_q
 
 
 def archive_query_keywords(text):
@@ -3294,10 +3348,10 @@ def load_pending_inbound_batch(conn, wa_id, current_inbound_id):
 def load_memories(conn, wa_id):
     rows = conn.execute(
         """
-        SELECT kind, content
+        SELECT kind, content, importance, updated_at, created_at
         FROM wa_memories
         WHERE wa_id = ?
-        ORDER BY updated_at DESC, id DESC
+        ORDER BY importance DESC, updated_at DESC, id DESC
         LIMIT 20
         """,
         (wa_id,),
@@ -3445,24 +3499,26 @@ def collect_image_inputs(rows):
     return images
 
 
-def upsert_memory(conn, wa_id, content, kind="note"):
+def upsert_memory(conn, wa_id, content, kind="note", importance=3):
     text = clean_text(content)
     if not text:
         return False
     key = normalize_key(text)
     if not key:
         return False
+    importance = max(1, min(5, int(importance or 3)))
     now = utc_now()
     conn.execute(
         """
-        INSERT INTO wa_memories (wa_id, kind, content, memory_key, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?)
+        INSERT INTO wa_memories (wa_id, kind, content, memory_key, importance, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(wa_id, memory_key) DO UPDATE SET
             kind = excluded.kind,
             content = excluded.content,
+            importance = MAX(importance, excluded.importance),
             updated_at = excluded.updated_at
         """,
-        (wa_id, kind, text, key, now, now),
+        (wa_id, kind, text, key, importance, now, now),
     )
     return True
 
@@ -3906,33 +3962,44 @@ def maybe_extract_memories(conn, wa_id, profile_name, incoming_text):
 最多 3 項。
 """.strip()
 
+    # extracted items are dicts {content, importance} or plain strings (fallback)
     extracted = []
     try:
-        raw = generate_model_text(prompt, temperature=0.2, max_tokens=180, system_prompt=MEMORY_EXTRACTOR_PROMPT)
+        raw = generate_model_text(prompt, temperature=0.2, max_tokens=240, system_prompt=MEMORY_EXTRACTOR_PROMPT)
         for item in parse_json_array(raw):
-            if isinstance(item, str):
+            if isinstance(item, dict):
+                text = clean_text(item.get("content", ""))
+                importance = max(1, min(5, int(item.get("importance") or 3)))
+                if is_long_term_memory_candidate(text):
+                    extracted.append({"content": text, "importance": importance})
+            elif isinstance(item, str):
                 text = clean_text(item)
                 if is_long_term_memory_candidate(text):
-                    extracted.append(text)
+                    extracted.append({"content": text, "importance": 3})
     except Exception:
         extracted = []
 
     if not extracted:
-        extracted = [item for item in heuristic_extract_memories(incoming_text) if is_long_term_memory_candidate(item)]
+        extracted = [
+            {"content": t, "importance": 3}
+            for t in heuristic_extract_memories(incoming_text)
+            if is_long_term_memory_candidate(t)
+        ]
 
-    extracted = extract_preference_memories(incoming_text) + extracted
+    pref_items = [{"content": t, "importance": 3} for t in extract_preference_memories(incoming_text)]
+    extracted = pref_items + extracted
 
     seen = set()
     deduped = []
     for item in extracted:
-        key = normalize_key(item)
+        key = normalize_key(item["content"])
         if key and key not in seen:
             seen.add(key)
             deduped.append(item)
 
     saved = []
     for item in deduped[:4]:
-        if is_long_term_memory_candidate(item) and upsert_memory(conn, wa_id, item, kind="auto"):
+        if is_long_term_memory_candidate(item["content"]) and upsert_memory(conn, wa_id, item["content"], kind="auto", importance=item["importance"]):
             saved.append(item)
     if saved:
         conn.commit()
@@ -4023,7 +4090,45 @@ def maybe_extract_session_memories(conn, wa_id, incoming_text):
     return saved
 
 
-def load_session_memory_rows(conn, wa_id, limit=8, bucket=None):
+def maybe_extract_qa_turn_memory(conn, wa_id, history_rows):
+    """Synthesize recent Q&A interaction into session memory."""
+    if len(history_rows) < 2:
+        return
+    # Look for a User Question -> Assistant Answer pair
+    latest = history_rows[-2:]
+    if latest[0]["direction"] != "inbound" or latest[1]["direction"] != "outbound":
+        return
+    
+    question = clean_text(latest[0]["body"])
+    answer = clean_text(latest[1]["body"])
+    
+    if len(question) < 6 or len(answer) < 4:
+        return
+    
+    # Heuristic: only store if it feels like a meaningful knowledge exchange
+    content = f"Q: {question} A: {answer}"
+    if len(content) > 80:
+        content = content[:77] + "..."
+        
+    # Check if this Q&A is already covered in recent memories to avoid flooding
+    if memory_already_exists(conn, wa_id, content):
+        return
+
+    upsert_session_memory(conn, wa_id, content, bucket="within_24h")
+    conn.commit()
+
+
+def memory_already_exists(conn, wa_id, content):
+    # Check recent session memories for high similarity
+    rows = conn.execute(
+        "SELECT content FROM wa_session_memories WHERE wa_id = ? AND expires_at > ? LIMIT 5",
+        (wa_id, hk_now().isoformat())
+    ).fetchall()
+    for row in rows:
+        if normalize_key(row["content"]) == normalize_key(content):
+            return True
+    return False
+
     now = hk_now()
     target_bucket = normalize_recent_bucket(bucket) if bucket else ""
     rows = conn.execute(
@@ -4040,8 +4145,18 @@ def load_session_memory_rows(conn, wa_id, limit=8, bucket=None):
     items = []
     for row in rows:
         item = dict(row)
-        item["current_bucket"] = current_recent_bucket(item.get("observed_at") or item.get("updated_at"), now)
-        if target_bucket and item["current_bucket"] != target_bucket:
+        age_bucket = current_recent_bucket(item.get("observed_at") or item.get("updated_at"), now)
+        stored = normalize_recent_bucket(item.get("bucket")) or "within_7d"
+        # Cascade: effective bucket is the older (less recent) of stored vs age-based.
+        # A within_24h memory stored 2 days ago degrades to within_3d — it can never
+        # be promoted beyond its stored bucket.
+        _tier = {"within_24h": 0, "within_3d": 1, "within_7d": 2}
+        _rtier = {0: "within_24h", 1: "within_3d", 2: "within_7d"}
+        effective = _rtier[max(_tier.get(stored, 2), _tier.get(age_bucket or "within_7d", 2))]
+        item["stored_bucket"] = stored
+        item["current_bucket"] = effective
+        item["bucket"] = effective  # downstream code that uses row["bucket"] gets the cascaded value
+        if target_bucket and effective != target_bucket:
             continue
         items.append(item)
         if len(items) >= limit:
@@ -4564,6 +4679,7 @@ def detect_question_like(text):
         "点解", "點解", "点样", "點樣", "咩", "乜", "吗", "嗎", "呢", "呀",
         "係咪", "系咪", "会唔会", "會唔會", "可唔可以",
         "几", "幾", "邊", "乜嘢",
+        "有冇", "有没有", "有無", "仲有冇", "係咪有",
     ]
     return any(marker in value for marker in markers)
 
@@ -4640,6 +4756,42 @@ def detect_emotional_support(text):
     return any(marker in value for marker in markers)
 
 
+_EDUCATION_KEYWORDS = (
+    "quiz", "quizzes", "exam", "exams", "test", "tests",
+    "assignment", "assignments", "homework", "deadline",
+    "lab", "tutorial", "lecture", "pre",
+    "功課", "作業", "考試", "測驗", "測試",
+    "上堂", "上課", "有課",
+)
+
+_SCHEDULE_FORWARD_MARKERS = (
+    "下星期", "下周", "下禮拜", "下礼拜", "下個星期", "下个星期",
+    "下個禮拜", "下个礼拜", "聽日", "听日", "明日", "明天", "明早",
+)
+
+
+def detect_education_schedule_query(text):
+    """Return True when the user is asking about upcoming academic tasks or schedule.
+
+    Triggers on texts like:
+    - 下星期仲有冇quiz
+    - 今個星期有冇assignment due
+    - 下周有冇考試
+    - 呢星期幾時交功課
+    """
+    value = extract_reply_surface_text(text).lower()
+    if not value:
+        return False
+    has_edu = any(kw in value for kw in _EDUCATION_KEYWORDS)
+    if not has_edu:
+        return False
+    # Must also look like a question or have a schedule time reference
+    is_question = detect_question_like(value)
+    has_forward_time = any(m in value for m in _SCHEDULE_FORWARD_MARKERS)
+    has_recent_time = any(m in value for m in ("最近", "近排", "呢排", "呢星期", "今個星期", "本周", "本週", "今周"))
+    return is_question or has_forward_time or has_recent_time
+
+
 def build_task_state(history_rows, incoming_text):
     history_rows = history_rows or []
     latest_rows = history_rows[-6:]
@@ -4696,13 +4848,32 @@ def build_task_state(history_rows, incoming_text):
         if has_reply_context and not has_context_anchor:
             expected_next_move = "the user is replying briefly but the quoted context is missing, so ask one direct clarifying question instead of drifting to unrelated recent chat"
         else:
-            expected_next_move = "resolve the missing context from recent history or quote context instead of treating this as standalone small talk"
+            anchor_text = clean_text(latest_question_text or previous_assistant)
+            if anchor_text:
+                anchor_short = anchor_text[:60]
+                expected_next_move = (
+                    f"the user's short reply most likely answers: '{anchor_short}'; "
+                    "interpret it in that context and respond naturally — "
+                    "do not ask them to repeat or clarify info they just provided"
+                )
+            else:
+                expected_next_move = "resolve the missing context from recent history or quote context instead of treating this as standalone small talk"
         confidence = 0.88 if has_reply_context else 0.82
     elif detect_emotional_support(current_text):
         task_type = "emotional_support"
         user_intent = "needs comfort, empathy, or reassurance"
         expected_next_move = "respond with empathy first, then lightly follow up"
         confidence = 0.78
+    elif detect_education_schedule_query(current_text):
+        task_type = "education_schedule_query"
+        user_intent = "is asking about upcoming quiz, assignment, exam, course schedule, or academic tasks"
+        expected_next_move = (
+            "check the available memories for quiz, assignment, exam, or course schedule info "
+            "and answer directly based on what you know; "
+            "do not ask the user to remind you of info you may already have in memory; "
+            "if genuinely no relevant memory exists, give a warm acknowledgment and ask one specific question"
+        )
+        confidence = 0.84
     elif detect_question_like(current_text):
         task_type = "question_answering"
         user_intent = "is asking for an answer or explanation"
@@ -4724,7 +4895,7 @@ def build_task_state(history_rows, incoming_text):
     }
 
 
-def score_memory_text(content, query_terms, recent_text, task_state):
+def score_memory_text(content, query_terms, recent_text, task_state, importance=3, updated_at=None):
     text = clean_text(content)
     if not text:
         return -1
@@ -4739,6 +4910,18 @@ def score_memory_text(content, query_terms, recent_text, task_state):
             score += 3
     if recent_text and any(term in lowered for term in extract_match_terms(recent_text)[:10]):
         score += 2
+    # Importance boost: importance 5 → +4, 4 → +2, 3 → 0, 2 → -1, 1 → -2
+    imp = max(1, min(5, int(importance or 3)))
+    score += (imp - 3) * 2
+    # Age decay for long-term memories: penalise memories not refreshed in a long time
+    if updated_at:
+        parsed = parse_iso_dt(updated_at)
+        if parsed:
+            age_days = (datetime.now(timezone.utc) - parsed.astimezone(timezone.utc)).days
+            if age_days > 180:
+                score -= 3
+            elif age_days > 90:
+                score -= 1
     if task_state.get("task_type") in {"guessing_or_clue", "followup_answer"}:
         if re.search(r"[a-z]{2,6}\d{2,6}", lowered):
             score += 5
@@ -4746,10 +4929,28 @@ def score_memory_text(content, query_terms, recent_text, task_state):
             score += 2
     if task_state.get("task_type") == "emotional_support" and any(marker in lowered for marker in ["压力", "壓力", "stress", "sad", "唔开心", "唔開心"]):
         score += 4
+    if task_state.get("task_type") == "education_schedule_query":
+        _edu_kw = (
+            "quiz", "quizzes", "exam", "exams", "test", "assignment", "assignments",
+            "homework", "deadline", "lab", "tutorial", "lecture",
+            "功課", "作業", "考試", "測驗", "測試", "上堂", "上課", "有課", "pre",
+        )
+        if any(kw in lowered for kw in _edu_kw):
+            score += 6
+        # Course codes like COMP3511, ISOM3320
+        if re.search(r"[a-z]{2,6}\d{2,6}", lowered):
+            score += 4
+        # Day / week / time mentions make a memory more schedule-relevant
+        if re.search(r"星期[一二三四五六日]|禮拜[一二三四五六日]|monday|tuesday|wednesday|thursday|friday", lowered):
+            score += 3
     return score
 
 
 def select_relevant_memories(conn, wa_id, incoming_text, task_state, history_rows, primary_text, long_limit=6, short_limit=5, archive_limit=3):
+    # Education/schedule queries benefit from seeing more short-term memories (where quiz/assignment info lives)
+    if task_state.get("task_type") == "education_schedule_query":
+        short_limit = max(short_limit, 8)
+        archive_limit = max(archive_limit, 4)
     query_text = "\n".join(filter(None, [clean_text(incoming_text), recent_history_text(history_rows, limit=4), task_state.get("latest_question_text", "")]))
     query_terms = extract_match_terms(query_text)
     recent_text = recent_history_text(history_rows, limit=6)
@@ -4763,7 +4964,11 @@ def select_relevant_memories(conn, wa_id, incoming_text, task_state, history_row
             continue
         if primary_text and memories_look_duplicated(content, primary_text):
             continue
-        score = score_memory_text(content, query_terms, recent_text, task_state)
+        score = score_memory_text(
+            content, query_terms, recent_text, task_state,
+            importance=row.get("importance", 3),
+            updated_at=row.get("updated_at"),
+        )
         if score <= 0:
             continue
         scored_long.append((score, content))
@@ -4934,6 +5139,12 @@ def format_task_state_block(task_state):
         lines.append("- reply_context_hint: the current inbound explicitly looks like a reply to an earlier message")
     if not task_state.get("has_context_anchor", True):
         lines.append("- missing_context_hint: the referenced earlier context is not available, so ask one direct clarifying question instead of drifting")
+    if task_state.get("task_type") == "education_schedule_query":
+        lines.append(
+            "- education_schedule_hint: the user is asking about quiz, assignment, exam, or course schedule; "
+            "scan the memory sections above first and answer based on what you know; "
+            "do NOT ask the user to remind you of info you may already have in memory"
+        )
     surface_text = clean_text(task_state.get("surface_text", ""))
     if surface_text:
         lines.append(f"- surface_text: {surface_text}")
@@ -4989,6 +5200,7 @@ Reply rules:
 - If the user is giving a clue, short answer, code, or number, treat it as context-dependent, not standalone small talk.
 - If the current inbound looks like a course code, identifier, or quoted short answer, do not switch to unrelated recent chat topics.
 - If the current inbound is a code or identifier, first say what it most likely refers to. If you cannot infer it confidently, ask one direct clarifying question. Do not pivot to unrelated recent chat.
+- If the user asks about quiz, assignment, exam, or upcoming academic schedule, check the memory sections above first and answer directly based on what you know. Do not ask the user to remind you of info you may already have in memory; only ask if the relevant memory is genuinely absent.
 - Keep replies natural and concise for WhatsApp.
 - Use at most 0-1 inline emoji in a whole reply.
 - Output only the WhatsApp reply body itself.
@@ -5020,6 +5232,7 @@ def build_structured_context_from_runtime_context(runtime_context):
         "- If the user gives a clue, short answer, code, or number, resolve the implied context first.\n"
         "- If the current inbound looks like a course code, identifier, or quoted short answer, do not switch to unrelated recent chat topics.\n"
         "- If the current inbound is a code or identifier, first say what it most likely refers to. If you cannot infer it confidently, ask one direct clarifying question. Do not pivot to unrelated recent chat.\n"
+        "- If the user asks about quiz, assignment, exam, or upcoming academic schedule, check the memory sections above first and answer directly based on what you know. Do not ask the user to remind you of info you may already have in memory; only ask if the relevant memory is genuinely absent.\n"
         "- Keep replies natural and concise for WhatsApp.\n"
         "- Use at most 0-1 inline emoji in a whole reply.\n"
         "- Output only the WhatsApp reply body itself."
@@ -5179,10 +5392,10 @@ def build_prompt(conn, wa_id, profile_name, incoming_text, image_inputs=None, im
     return build_legacy_prompt_from_runtime_context(runtime_context)
 
 
-def should_use_sillytavern_brain(wa_id, incoming_text, image_inputs=None):
-    if BRAIN_PROVIDER != "sillytavern":
+def should_use_brain_bridge(wa_id, incoming_text, image_inputs=None):
+    if BRAIN_PROVIDER != "bridge":
         return False
-    if not SILLYTAVERN_API_URL:
+    if not BRAIN_BRIDGE_URL:
         return False
     if image_inputs:
         return False
@@ -5192,7 +5405,7 @@ def should_use_sillytavern_brain(wa_id, incoming_text, image_inputs=None):
 
 
 def should_use_bridge_brain(wa_id, incoming_text, image_inputs=None):
-    return should_use_sillytavern_brain(wa_id, incoming_text, image_inputs=image_inputs)
+    return should_use_brain_bridge(wa_id, incoming_text, image_inputs=image_inputs)
 
 
 def build_structured_context_payload(conn, wa_id, profile_name, incoming_text, image_inputs=None, image_categories=None):
@@ -5338,7 +5551,26 @@ def build_structured_context_payload(conn, wa_id, profile_name, incoming_text, i
     return system_content, messages
 
 
-def build_sillytavern_request_payload(conn, wa_id, profile_name, incoming_text, image_inputs=None, image_categories=None):
+def _resolve_bridge_model(task_type):
+    """Return the model name to send to the bridge for the given task_type.
+
+    Falls back to BRAIN_BRIDGE_MODEL (global default) when no task-specific
+    override env var is configured.  Returns empty string if nothing is set,
+    which tells the backend to use its own default model.
+    """
+    complex_types = {"education_schedule_query", "question_answering"}
+    if task_type in complex_types and _BRAIN_MODEL_COMPLEX:
+        return _BRAIN_MODEL_COMPLEX
+    if task_type == "casual_chat" and _BRAIN_MODEL_CASUAL:
+        return _BRAIN_MODEL_CASUAL
+    return BRAIN_BRIDGE_MODEL
+
+
+def build_brain_bridge_payload(
+    conn, wa_id, profile_name, incoming_text,
+    image_inputs=None, image_categories=None,
+    temperature=0.8, max_tokens=220, task_type="casual_chat",
+):
     runtime_context = build_runtime_context(
         conn,
         wa_id,
@@ -5350,50 +5582,72 @@ def build_sillytavern_request_payload(conn, wa_id, profile_name, incoming_text, 
     system_content, messages = build_structured_context_from_runtime_context(runtime_context)
     payload = {
         "messages": [{"role": "system", "content": system_content}] + messages,
-        "temperature": 0.8,
-        "max_tokens": 220,
+        "temperature": temperature,
+        "max_tokens": max_tokens,
     }
-    if SILLYTAVERN_MODEL:
-        payload["model"] = SILLYTAVERN_MODEL
+    model = _resolve_bridge_model(task_type)
+    if model:
+        payload["model"] = model
     return payload
 
 
-def build_bridge_request_payload(conn, wa_id, profile_name, incoming_text, image_inputs=None, image_categories=None):
-    return build_sillytavern_request_payload(
+def build_bridge_request_payload(
+    conn, wa_id, profile_name, incoming_text,
+    image_inputs=None, image_categories=None,
+    temperature=0.8, max_tokens=220, task_type="casual_chat",
+):
+    return build_brain_bridge_payload(
         conn,
         wa_id,
         profile_name,
         incoming_text,
         image_inputs=image_inputs,
         image_categories=image_categories,
+        temperature=temperature,
+        max_tokens=max_tokens,
+        task_type=task_type,
     )
 
 
-def generate_sillytavern_reply(conn, wa_id, profile_name, incoming_text, image_inputs=None, image_categories=None):
-    payload = build_sillytavern_request_payload(
+def generate_brain_bridge_reply(
+    conn, wa_id, profile_name, incoming_text,
+    image_inputs=None, image_categories=None,
+    temperature=0.8, max_tokens=220, task_type="casual_chat",
+):
+    payload = build_brain_bridge_payload(
         conn,
         wa_id,
         profile_name,
         incoming_text,
         image_inputs=image_inputs,
         image_categories=image_categories,
+        temperature=temperature,
+        max_tokens=max_tokens,
+        task_type=task_type,
     )
-    return call_sillytavern_chat(
-        SILLYTAVERN_API_URL,
-        SILLYTAVERN_API_KEY,
+    return call_brain_bridge(
+        BRAIN_BRIDGE_URL,
+        BRAIN_BRIDGE_KEY,
         payload,
-        timeout=max(SILLYTAVERN_TIMEOUT_SECONDS, 5.0),
+        timeout=max(BRAIN_BRIDGE_TIMEOUT, 5.0),
     )
 
 
-def generate_bridge_reply(conn, wa_id, profile_name, incoming_text, image_inputs=None, image_categories=None):
-    return generate_sillytavern_reply(
+def generate_bridge_reply(
+    conn, wa_id, profile_name, incoming_text,
+    image_inputs=None, image_categories=None,
+    temperature=0.8, max_tokens=220, task_type="casual_chat",
+):
+    return generate_brain_bridge_reply(
         conn,
         wa_id,
         profile_name,
         incoming_text,
         image_inputs=image_inputs,
         image_categories=image_categories,
+        temperature=temperature,
+        max_tokens=max_tokens,
+        task_type=task_type,
     )
 
 
@@ -5528,11 +5782,74 @@ def log_outbound_error(conn, wa_id, error_type, error_detail):
     conn.commit()
 
 
+def maybe_extract_qa_turn_memory(conn, wa_id, combined_text):
+    """When Susu asked a question and the user replied with a short answer,
+    synthesize the Q+A pair into a session memory so future turns can reference it.
+
+    Fires for any question Susu asked (not only education), as long as the user's
+    reply is short (≤ 80 chars) and doesn't look like a counter-question.
+    """
+    user_text = clean_text(combined_text)
+    if not user_text or len(user_text) > 80:
+        return
+
+    # If the user is asking back rather than answering, skip
+    if detect_question_like(user_text) and len(user_text) > 12:
+        return
+
+    # Load Susu's most recent outbound messages to find the question she asked
+    rows = conn.execute(
+        """
+        SELECT body FROM wa_messages
+        WHERE wa_id = ? AND direction = 'outbound'
+          AND body IS NOT NULL AND body != ''
+        ORDER BY created_at DESC
+        LIMIT 6
+        """,
+        (wa_id,),
+    ).fetchall()
+
+    susu_question = ""
+    for row in rows:
+        body = clean_text(row[0] if not hasattr(row, "keys") else row["body"])
+        if not body:
+            continue
+        if detect_question_like(body):
+            susu_question = body
+            break
+
+    if not susu_question:
+        return
+
+    # Skip low-value generic questions (e.g. "好唔好？", "係咪？") that produce noise
+    q_stripped = clean_text(re.sub(r"[，。？！、\s]+$", "", susu_question)).strip()
+    if len(q_stripped) < 6:
+        return
+
+    # Build a compact natural-language memory snippet
+    q_short = q_stripped[:60]
+    memory_content = f"{q_short}？ 用戶講：{user_text}"
+    if len(memory_content) > 120:
+        memory_content = memory_content[:120]
+
+    # Pick bucket: time-sensitive answers stay fresher
+    if any(m in user_text for m in ("聽日", "听日", "明天", "明日", "明早")):
+        bucket = "within_24h"
+    elif any(m in user_text for m in _SCHEDULE_FORWARD_MARKERS + ("今日", "今天", "而家", "宜家")):
+        bucket = "within_3d"
+    else:
+        bucket = "within_7d"
+
+    upsert_session_memory(conn, wa_id, memory_content, bucket=bucket)
+    conn.commit()
+
+
 def record_batch_side_effects(conn, wa_id, profile_name, combined_text, memory_text, image_categories):
     if memory_text:
         maybe_extract_memories(conn, wa_id, profile_name, memory_text)
     if combined_text:
         maybe_extract_session_memories(conn, wa_id, combined_text)
+        maybe_extract_qa_turn_memory(conn, wa_id, combined_text)
         try:
             remind_at, remind_content = parse_reminder(wa_id, combined_text)
             if remind_at and remind_content:
@@ -5894,15 +6211,15 @@ def generate_reply(conn, wa_id, profile_name, incoming_text, image_inputs=None, 
     profile = get_time_profile(now)
     temperature = 0.78
     max_tokens = 120
-    if night_mode:
-        temperature = 0.82
-        max_tokens = 180
     if profile == "busy_day":
         temperature = 0.74
         max_tokens = 88
     elif profile == "late_night":
         temperature = 0.86
         max_tokens = 210
+    elif night_mode:  # 22–00h
+        temperature = 0.82
+        max_tokens = 180
     sleep_boundary = has_sleep_boundary(conn, wa_id)
     effective_text = incoming_text
     if sleep_boundary:
@@ -5917,6 +6234,13 @@ def generate_reply(conn, wa_id, profile_name, incoming_text, image_inputs=None, 
     )
     legacy_prompt = build_legacy_prompt_from_runtime_context(runtime_context)
 
+    # Task-type based max_tokens boost — applied after time-profile so we only raise, never lower.
+    task_type = runtime_context["task_state"].get("task_type", "casual_chat")
+    if task_type == "education_schedule_query":
+        max_tokens = max(max_tokens, 320)
+    elif task_type == "question_answering":
+        max_tokens = max(max_tokens, 260)
+
     try:
         if use_bridge_brain:
             primary_reply = generate_bridge_reply(
@@ -5926,6 +6250,9 @@ def generate_reply(conn, wa_id, profile_name, incoming_text, image_inputs=None, 
                 effective_text,
                 image_inputs=image_inputs,
                 image_categories=image_categories,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                task_type=task_type,
             )
         else:
             primary_reply = generate_model_text(
@@ -5934,7 +6261,7 @@ def generate_reply(conn, wa_id, profile_name, incoming_text, image_inputs=None, 
                 max_tokens=max_tokens,
                 image_inputs=image_inputs,
             )
-    except SillyTavernAdapterError:
+    except BrainBridgeError:
         if not BRAIN_FALLBACK_ON_ERROR:
             raise
         primary_reply = generate_model_text(
@@ -6025,8 +6352,8 @@ class Handler(BaseHTTPRequestHandler):
                     "time_profile": get_time_profile(),
                     "timezone": "Asia/Hong_Kong",
                     "brain_provider": BRAIN_PROVIDER,
-                    "bridge_brain_enabled": bool(SILLYTAVERN_API_URL),
-                    "sillytavern_enabled": bool(SILLYTAVERN_API_URL),
+                    "bridge_brain_enabled": bool(BRAIN_BRIDGE_URL),
+                    "bridge_enabled": bool(BRAIN_BRIDGE_URL),
                     "primary_model": relay_primary if RELAY_API_KEY else "",
                     "fallback_model": "",
                     "has_relay_key": bool(RELAY_API_KEY),
